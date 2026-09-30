@@ -16,16 +16,6 @@ omarchy plugin enable audryus.cartridge right
 omarchy-restart-shell
 ```
 
-A gamepad button appears in the right section of the bar. Click it for the
-library, or bind a key to any of these:
-
-```bash
-omarchy shell audryus.cartridge open      # library
-omarchy shell audryus.cartridge config    # core per console
-omarchy shell audryus.cartridge refresh   # rescan, then open
-omarchy shell audryus.cartridge toggle
-```
-
 **Dependencies**, all of them already on a normal Omarchy install:
 `retroarch`, the `libretro-*` cores you want, `libretro-core-info` (for the
 extension table), `bsdtar` (7z and rar), and `python3`. Nothing is installed at
