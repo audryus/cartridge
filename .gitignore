@@ -3,7 +3,7 @@
 # stays out of git.
 state/
 
-# Extracted ROMs staged for RetroArch live in /tmp/cartridge-$UID, not here.
+# Extracted ROMs staged for RetroArch live in ~/.cache/cartridge/staging, not here.
 
 # Python bytecode from running the scripts
 bin/__pycache__/
