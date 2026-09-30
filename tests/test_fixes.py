@@ -136,6 +136,23 @@ class StateIsNotClobberedTest(Fixture):
             self.assertEqual(process.wait(), 0)
         self.assertEqual(sorted(lib.load_user()["favorites"]), sorted(ids))
 
+    def test_state_changes_read_the_library_under_the_lock(self):
+        # Review #5: roms.json was read before the lock was taken, so a scan
+        # could replace it between the check and the write.
+        self.loose("Game.smc", b"s" * 16)
+        rom_id = self.scan()["roms"][0]["id"]
+        real = cartridge_state.load_roms
+        held = []
+
+        def spy(root):
+            held.append(getattr(lib._lock_depth, "value", 0) > 0)
+            return real(root)
+        with mock.patch.object(cartridge_state, "load_roms", spy):
+            cartridge_state.set_favorite(ROOT, rom_id, True)
+            cartridge_state.assign_console(ROOT, rom_id, "nintendo-64")
+            cartridge_state.assign_container(ROOT, self.library, "auto")
+        self.assertEqual(held, [True, True, True])
+
     def test_lock_is_reentrant_and_exclusive(self):
         order = []
         with lib.state_lock():
@@ -275,6 +292,27 @@ class StagingTest(Fixture):
         self.assertTrue(staged)
         with open(again, "rb") as handle:
             self.assertEqual(handle.read(1), b"9")
+
+    def test_a_leftover_part_file_or_subdir_is_cleared(self):
+        # Review #6/#7: a crash mid-write leaves a .part; a planted subdir used
+        # to survive the cleanup and be counted against the cap forever.
+        rom = self.rom_named(self.document, "One")
+        self.stage("One")
+        folder = os.path.join(self.cache, "staging", rom["id"])
+        os.unlink(os.path.join(folder, "One.smc"))
+        with open(os.path.join(folder, "One.smc.part"), "wb") as handle:
+            handle.write(b"half")
+        os.makedirs(os.path.join(folder, "junk", "deeper"))
+        content, staged = self.stage("One")
+        self.assertTrue(staged)
+        self.assertEqual(sorted(os.listdir(folder)), sorted([cartridge_play.MARKER, "One.smc"]))
+
+    def test_a_world_readable_staging_dir_is_closed(self):
+        base = os.path.join(self.cache, "staging")
+        os.makedirs(base)
+        os.chmod(base, 0o777)
+        self.stage("One")
+        self.assertEqual(os.stat(base).st_mode & 0o777, 0o700)
 
     def test_refuses_a_staging_dir_owned_by_someone_else(self):
         base = os.path.join(self.cache, "staging")
@@ -549,8 +587,44 @@ class UserStateTest(Fixture):
 # ---------------------------------------------------------------- misc
 
 class MiscTest(Fixture):
-    def test_bsdtar_runs_in_the_c_locale(self):
-        self.assertEqual(lib._BSDTAR_ENV["LC_ALL"], "C")
+    @unittest.skipUnless(HAVE_BSDTAR, "bsdtar is not installed")
+    def test_bsdtar_is_started_in_the_c_locale(self):
+        # Review #7: asserting the constant proved nothing -- it is the env
+        # actually handed to bsdtar that has to be pinned.
+        path = os.path.join(self.dir, "set.7z")
+        bsdtar_archive(path, {"a.smc": b"x"})
+        envs = []
+        real = subprocess.Popen
+
+        def spy(*args, **kwargs):
+            envs.append(kwargs.get("env"))
+            return real(*args, **kwargs)
+        with mock.patch.dict(os.environ, {"LC_ALL": "pt_BR.UTF-8", "LANG": "pt_BR.UTF-8"}), \
+                mock.patch.object(lib.subprocess, "Popen", spy):
+            with lib.Archive(path=path) as archive:
+                self.assertEqual([e["name"] for e in archive.entries()], ["a.smc"])
+        self.assertTrue(envs)
+        self.assertTrue(all(env and env.get("LC_ALL") == "C" for env in envs))
+
+    def test_an_unreadable_inner_zip_is_reported(self):
+        # Review #8: the zip branch skipped it without a word.
+        write_zip(os.path.join(self.library, "set.zip"), {
+            "Broken.zip": b"this is not a zip", "Good.zip": zip_bytes({"G.smc": b"g" * 16})})
+        messages = []
+        with mock.patch.object(cartridge_scan, "log", messages.append):
+            document = self.scan()
+        self.assertEqual([rom["name"] for rom in visible(document)], ["G"])
+        self.assertTrue(any("Broken.zip" in line for line in messages), messages)
+
+    def test_a_file_rewritten_in_place_is_read_again(self):
+        # Review #4: rewriting a file does not move its folder's mtime.
+        path = self.loose("Game.smc", b"s" * 16)
+        self.scan()
+        folder = os.stat(self.library)
+        with open(path, "wb") as handle:
+            handle.write(b"s" * 32)
+        os.utime(self.library, ns=(folder.st_atime_ns, folder.st_mtime_ns))
+        self.assertEqual(self.scan()["roms"][0]["size"], 32)
 
     def test_fingerprint_has_nanosecond_resolution(self):
         path = self.loose("Game.smc", b"s")

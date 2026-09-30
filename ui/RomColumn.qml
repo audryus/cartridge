@@ -29,7 +29,8 @@ Item {
                       root.store.rowsFor(root.consoleId, root.query)
 
     readonly property bool unidentified: root.consoleId === "unknown"
-    readonly property var sources: root.unidentified ? root.store.unknownGroups() : []
+    readonly property var sources: root.store.revision,
+                                   root.unidentified ? root.store.unknownGroups() : []
 
     function clearSearch() {
         queryTimer.stop()

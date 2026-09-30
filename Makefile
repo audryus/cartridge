@@ -5,7 +5,7 @@
 PLUGIN := audryus.cartridge
 ROOT   := $(shell pwd)
 
-.PHONY: test scan check lint-qml restart-shell open config refresh validate help
+.PHONY: test smoke scan check lint-qml restart-shell open config refresh validate help
 
 help:                       ## Show this
 	@grep -hE '^[a-z-]+:.*?## ' $(MAKEFILE_LIST) | sed 's/:.*## /\t/' | expand -t22
@@ -14,6 +14,9 @@ test:                       ## Run the scanner and model tests
 	python3 tests/test_scan.py
 	python3 tests/test_fixes.py
 	node tests/test_model.js
+
+smoke:                      ## Drive the live shell over IPC and check its log
+	tests/smoke_shell.sh
 
 check: test lint-qml        ## Everything
 

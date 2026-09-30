@@ -121,6 +121,10 @@ BarWidget {
     // for the whole shell. The service loads asynchronously, so this waits
     // before deciding it is not coming -- a handler created up front would
     // register the same target once per monitor and race the service's.
+    //
+    // Without the service there is nothing shared to elect one bar with, so
+    // on several monitors each bar registers and the first one answers. That
+    // is the fallback's known limit; under the built-in bar it never runs.
     property bool serviceMissing: false
 
     Timer {
@@ -139,6 +143,14 @@ BarWidget {
             function toggle(): void { root.toggle() }
             function config(): void { root.openConfig() }
             function refresh(): void { root.refresh() }
+            function status(): string {
+                return JSON.stringify({
+                    scanning: root.store.scanning,
+                    roms: root.store.roms.length,
+                    problem: root.store.problem !== "",
+                    shared: false
+                })
+            }
         }
     }
 
