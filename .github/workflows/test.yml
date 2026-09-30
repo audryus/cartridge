@@ -11,12 +11,13 @@ jobs:
     runs-on: ubuntu-latest
     # Arch, like the machines cartridge runs on: the extension table is built
     # from the system's libretro-core-info, and bsdtar comes from libarchive.
+    # One core (snes9x) is installed so the core-choice test has one to pick.
     container: archlinux:latest
     steps:
       - name: Install dependencies
-        run: pacman -Syu --noconfirm --needed git make python nodejs libarchive libretro-core-info
+        run: pacman -Syu --noconfirm --needed git make python nodejs libarchive libretro-core-info libretro-snes9x
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Check manifest.json parses
         run: python -m json.tool manifest.json > /dev/null
