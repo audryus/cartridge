@@ -12,6 +12,7 @@ help:                       ## Show this
 
 test:                       ## Run the scanner and model tests
 	python3 tests/test_scan.py
+	python3 tests/test_fixes.py
 	node tests/test_model.js
 
 check: test lint-qml        ## Everything

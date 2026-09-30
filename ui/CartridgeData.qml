@@ -3,6 +3,10 @@
 // parsed state, keeps it in step with the JSON files on disk, and runs the
 // scanner, the state mutator and the launcher.
 //
+// There is one of these for the whole shell (see Service.qml), not one per
+// monitor: roms.json is several megabytes, and parsing it once per bar was
+// work thrown away.
+//
 // Every script answers with one JSON line on stdout, so nothing here has to
 // guess what happened: a refused core, a missing file and a scan that added
 // nine thousand roms all come back the same way.
@@ -35,6 +39,11 @@ QtObject {
     readonly property string romsFile: stateDir + "/roms.json"
     readonly property string consolesFile: stateDir + "/consoles.json"
     readonly property string coresFile: stateDir + "/cores.json"
+    readonly property string userFile: stateDir + "/user.json"
+
+    // False for the fallback store a bar widget keeps in case the shared
+    // service is unavailable: an inactive store reads nothing and runs nothing.
+    property bool active: true
 
     // ---- what the UI draws from
     property var roms: []
@@ -42,43 +51,80 @@ QtObject {
     property var consoles: ({})
     property var catalog: ({})
     property var cores: []
+    property var user: ({ favorites: {}, lastPlayed: {}, assigned: {} })
     property string libraryRoot: ""
     property bool loaded: false
     property bool everScanned: false
+
+    // Derived once when their inputs change, not once per row that asks.
+    readonly property var playable: Model.playableMap(consoles, cores)
+    readonly property var catalogOptions: Model.catalogOptions(catalog)
 
     // ---- what the toolbar reports
     property bool scanning: false
     property string status: ""
     property string problem: ""
     property int lastScan: 0
+    // Which scan roms.json came from. consoles.json names the latest one, so
+    // an open can tell whether the big file needs reading again at all.
+    property string romsStamp: ""
 
-    // Bumped whenever the list changes, so views know to rebuild.
+    // Bumped whenever the list changes, so views know to rebuild. Several
+    // changes in one go -- three files arriving together -- are one bump.
     property int revision: 0
+    property var byId: ({})
+    property var rowCache: ({})
 
     signal played(string name, string core)
 
+    function bump() {
+        Qt.callLater(store.bumpNow)
+    }
+
+    function bumpNow() {
+        rowCache = ({})
+        revision++
+    }
+
     // ------------------------------------------------------------------ load
 
-    // Called every time the window opens, not once per session. cartridge-state.py
-    // replaces the state files with a rename, which a file watcher sitting on
-    // the old inode never sees, so re-reading on open is what makes the window
-    // agree with what is on disk -- including a rescan started elsewhere.
+    // Called every time the window opens. cartridge-state.py replaces the
+    // state files with a rename, which a file watcher sitting on the old inode
+    // may not see, so re-reading on open is what makes the window agree with
+    // what is on disk -- including a rescan started elsewhere.
     //
-    // watchChanges is kept as well: it catches a plain rewrite immediately, and
-    // when it misses, the next open is still correct.
+    // Only the small files are read every time. roms.json is read when
+    // consoles.json says a scan has replaced it (applyConsoles), or when it
+    // has never been read.
+    //
+    // FileView's watchChanges only emits fileChanged; each view below turns
+    // that into a reload, and applies what it read on `loaded`.
     function ensureLoaded() {
         reload()
     }
 
     function reload() {
-        romsView.reload()
+        if (!active)
+            return
+        if (!loaded)
+            romsView.reload()
+        userView.reload()
         consolesView.reload()
         coresView.reload()
     }
 
-    // decorate gives every rom the two things the UI needs that are cheaper to
-    // work out here than in the file: `where` is the human path to the rom,
-    // and `source` is the file or folder it came out of.
+    function reloadAll() {
+        if (!active)
+            return
+        romsView.reload()
+        reload()
+    }
+
+    // decorate gives every rom what the UI needs that is cheaper to work out
+    // once here than in the file or on every keystroke: `where` is the human
+    // path to the rom, `source` the file or folder it came out of, `needle`
+    // the lower-cased text a search looks in, and `detected` the scanner's
+    // answer, kept so user.json can be applied over it and taken back.
     function decorate(rom) {
         const root = libraryRoot
         let source = rom.path
@@ -93,55 +139,93 @@ QtObject {
         rom.where = rom.depth > 0
             ? source + " › " + (rom.parent ? rom.parent + " › " : "") + rom.entry
             : source
+        rom.needle = Model.needleOf(rom)
+        rom.detected = { console: rom.console, reason: rom.reason }
+        Model.applyUser(rom, user)
         return rom
     }
 
-    function applyRoms(raw) {
-        if (!raw) return
-        let document
+    function parse(raw, what) {
+        if (!raw)
+            return null
         try {
-            document = JSON.parse(raw)
+            return JSON.parse(raw)
         } catch (error) {
-            problem = "roms.json could not be read: " + error
-            return
+            if (what)
+                problem = what + " could not be read: " + error
+            return null
         }
+    }
+
+    function applyRoms(raw) {
+        const document = parse(raw, "roms.json")
         if (!document || !Array.isArray(document.roms)) return
 
         libraryRoot = document.root || ""
-        const rows = document.roms
-        for (let i = 0; i < rows.length; i++) decorate(rows[i])
+        const rows = []
+        const ids = {}
+        for (let i = 0; i < document.roms.length; i++) {
+            const rom = document.roms[i]
+            // A duplicate the scanner hid is only on disk so it can come back
+            // when the copy shown goes away; the UI never draws it.
+            if (rom.hidden) continue
+            rows.push(decorate(rom))
+            ids[rom.id] = rom
+        }
         roms = rows
+        byId = ids
         index = Model.reindex(rows)
         everScanned = true
         loaded = true
         lastScan = document.generated || 0
+        romsStamp = document.stamp || ""
         clearProblem()
-        revision++
+        bump()
+    }
+
+    function applyUser(raw) {
+        const document = parse(raw, "")
+        if (!document) return
+        user = {
+            favorites: document.favorites || {},
+            lastPlayed: document.lastPlayed || {},
+            assigned: document.assigned || {}
+        }
+        // The same file arrives after every change this window made itself;
+        // only redraw when it says something the roms do not already show.
+        let changed = false
+        let moved = false
+        for (let i = 0; i < roms.length; i++) {
+            const rom = roms[i]
+            const before = rom.favorite + "|" + rom.lastPlayed + "|" + rom.console
+            const was = rom.console
+            Model.applyUser(rom, user)
+            if (before !== rom.favorite + "|" + rom.lastPlayed + "|" + rom.console)
+                changed = true
+            if (was !== rom.console)
+                moved = true
+        }
+        if (moved)
+            index = Model.reindex(roms)
+        if (changed)
+            bump()
     }
 
     function applyConsoles(raw) {
-        if (!raw) return
-        let document
-        try {
-            document = JSON.parse(raw)
-        } catch (error) {
-            return
-        }
+        const document = parse(raw, "")
+        if (!document) return
         consoles = document.consoles || {}
         catalog = document.catalog || {}
-        revision++
+        if (loaded && document.romsStamp && document.romsStamp !== romsStamp)
+            romsView.reload()
+        bump()
     }
 
     function applyCores(raw) {
-        if (!raw) return
-        let document
-        try {
-            document = JSON.parse(raw)
-        } catch (error) {
-            return
-        }
+        const document = parse(raw, "")
+        if (!document) return
         cores = Array.isArray(document.cores) ? document.cores : []
-        revision++
+        bump()
     }
 
     function clearProblem() {
@@ -160,12 +244,13 @@ QtObject {
     // property, so a child object with no home is a load error.
     property FileView romsView: FileView {
         id: romsView
-        path: store.romsFile
+        path: store.active ? store.romsFile : ""
         blockLoading: false
-        preload: false
+        preload: store.active
         printErrors: false
         watchChanges: true
-        onTextChanged: romsTimer.restart()
+        onFileChanged: reload()
+        onLoaded: romsTimer.restart()
         onLoadFailed: store.setProblem("no library scanned yet - press refresh")
     }
 
@@ -175,25 +260,38 @@ QtObject {
         onTriggered: store.applyRoms(romsView.text())
     }
 
-    property FileView consolesView: FileView {
-        id: consolesView
-        path: store.consolesFile
+    property FileView userView: FileView {
+        id: userView
+        path: store.active ? store.userFile : ""
         blockLoading: false
-        preload: false
+        preload: store.active
         printErrors: false
         watchChanges: true
-        onTextChanged: store.applyConsoles(consolesView.text())
+        onFileChanged: reload()
+        onLoaded: store.applyUser(userView.text())
+    }
+
+    property FileView consolesView: FileView {
+        id: consolesView
+        path: store.active ? store.consolesFile : ""
+        blockLoading: false
+        preload: store.active
+        printErrors: false
+        watchChanges: true
+        onFileChanged: reload()
+        onLoaded: store.applyConsoles(consolesView.text())
         onLoadFailed: console.warn("[cartridge] no consoles.json yet")
     }
 
     property FileView coresView: FileView {
         id: coresView
-        path: store.coresFile
+        path: store.active ? store.coresFile : ""
         blockLoading: false
-        preload: false
+        preload: store.active
         printErrors: false
         watchChanges: true
-        onTextChanged: store.applyCores(coresView.text())
+        onFileChanged: reload()
+        onLoaded: store.applyCores(coresView.text())
         onLoadFailed: console.warn("[cartridge] no cores.json yet")
     }
 
@@ -262,7 +360,7 @@ QtObject {
     // --------------------------------------------------------------- actions
 
     function refresh() {
-        if (scanning)
+        if (scanning || !active)
             return
         scanning = true
         status = "scanning " + libraryRoot + "…"
@@ -275,31 +373,43 @@ QtObject {
         if (!rom)
             return
         const next = !rom.favorite
-        rom.favorite = next
-        revision++
+        setFavorite(rom, next)
         run([binDir + "/cartridge-state.py", "favorite", id, next ? "1" : "0"], result => {
             if (result && result.ok === false) {
-                rom.favorite = !next
-                revision++
+                setFavorite(rom, !next)
                 setProblem(result.error)
             }
         })
+    }
+
+    function setFavorite(rom, value) {
+        if (value)
+            user.favorites[rom.id] = true
+        else
+            delete user.favorites[rom.id]
+        rom.favorite = value
+        bump()
+    }
+
+    function setAssigned(rom, consoleId) {
+        if (consoleId)
+            user.assigned[rom.id] = consoleId
+        else
+            delete user.assigned[rom.id]
+        Model.applyUser(rom, user)
+        index = Model.reindex(roms)
+        bump()
     }
 
     function assignConsole(id, consoleId) {
         const rom = findRom(id)
         if (!rom)
             return
-        const before = rom.console
-        rom.console = consoleId
-        rom.reason = consoleId === Model.UNKNOWN ? "unknown" : "assigned"
-        index = Model.reindex(roms)
-        revision++
+        const before = user.assigned[id] || ""
+        setAssigned(rom, consoleId === "auto" ? "" : consoleId)
         run([binDir + "/cartridge-state.py", "assign", id, consoleId], result => {
             if (result && result.ok === false) {
-                rom.console = before
-                index = Model.reindex(roms)
-                revision++
+                setAssigned(rom, before)
                 setProblem(result.error)
             }
         })
@@ -312,14 +422,14 @@ QtObject {
             return
         status = "assigning " + consoleId + " to " + source + "…"
         run([binDir + "/cartridge-state.py", "container", source, consoleId], result => {
-            if (result && result.ok === false) {
-                setProblem(result.error)
+            if (!result || result.ok === false) {
+                setProblem(result ? result.error : "cartridge-state.py said nothing")
                 return
             }
-            const count = result ? result.assigned : 0
-            status = count + " roms in " + source + " are now " +
-                     (result ? result.name : consoleId)
-            reload()
+            status = result.assigned + " roms in " + source + " are now " + result.name
+            // Only user.json changed; the library itself did not.
+            userView.reload()
+            consolesView.reload()
         })
     }
 
@@ -329,11 +439,14 @@ QtObject {
             return
         const before = entry.core
         entry.core = coreId
-        revision++
+        // A new object, so `playable` -- a binding on `consoles` -- follows.
+        consoles = Object.assign({}, consoles)
+        bump()
         run([binDir + "/cartridge-state.py", "core", consoleId, coreId || "-"], result => {
             if (result && result.ok === false) {
                 entry.core = before
-                revision++
+                consoles = Object.assign({}, consoles)
+                bump()
                 setProblem(result.error)
             }
         })
@@ -353,8 +466,10 @@ QtObject {
                 setProblem(result ? result.error : "cartridge-play.py said nothing")
                 return
             }
-            rom.lastPlayed = Math.floor(Date.now() / 1000)
-            revision++
+            const now = Math.floor(Date.now() / 1000)
+            user.lastPlayed[rom.id] = now
+            rom.lastPlayed = now
+            bump()
             status = rom.name + " → " + result.core
             played(rom.name, result.core)
         })
@@ -363,10 +478,7 @@ QtObject {
     // ----------------------------------------------------------------- reads
 
     function findRom(id) {
-        for (let i = 0; i < roms.length; i++)
-            if (roms[i].id === id)
-                return roms[i]
-        return null
+        return byId[id] || null
     }
 
     function coreFor(consoleId) {
@@ -387,7 +499,7 @@ QtObject {
     // A rom can only be played once its console has a core that is still
     // installed. Everything else is a clear reason, not a disabled button.
     function isPlayable(consoleId) {
-        return Model.hasCore(cores, coreFor(consoleId))
+        return playable[consoleId] === true
     }
 
     function playableReason(consoleId) {
@@ -404,8 +516,15 @@ QtObject {
         return Model.consoleRows(index, catalog)
     }
 
+    // The sorted rows of one console are built once per revision; a search
+    // only filters them.
     function rowsFor(consoleId, query) {
-        return Model.romRows(roms, index, consoleId, query, isPlayable)
+        let base = rowCache[consoleId]
+        if (!base) {
+            base = Model.consoleRomRows(roms, index, consoleId, isPlayable)
+            rowCache[consoleId] = base
+        }
+        return Model.filterRows(base, query)
     }
 
     function unknownGroups() {
@@ -429,6 +548,7 @@ QtObject {
 
     property Process scanProc: Process {
         id: scanProc
+        command: [store.binDir + "/cartridge-scan.py"]
         stdout: StdioCollector {
             waitForEnd: true
             onStreamFinished: store.finishScan(String(text || ""))
@@ -457,7 +577,7 @@ QtObject {
             setProblem("the scan did not report back")
             return
         }
-        reload()
+        reloadAll()
         const bits = []
         bits.push(result.total + " roms")
         if (result.added) bits.push("+" + result.added + " new")

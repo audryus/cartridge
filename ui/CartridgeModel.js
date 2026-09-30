@@ -25,6 +25,7 @@ function reindex(roms) {
     var i, rom, key;
     for (i = 0; i < roms.length; i++) {
         rom = roms[i];
+        if (rom.hidden) continue;
         key = rom.console + "|" + rom.name.toLowerCase();
         (groups[key] = groups[key] || []).push(rom);
     }
@@ -51,6 +52,7 @@ function reindex(roms) {
 
     for (i = 0; i < roms.length; i++) {
         rom = roms[i];
+        if (rom.hidden) continue;
         if (rom.console === UNKNOWN) {
             counts[UNKNOWN] = (counts[UNKNOWN] || 0) + 1;
             continue;
@@ -73,22 +75,33 @@ function compareRoms(a, b) {
                                       { sensitivity: "base", numeric: true });
 }
 
-function matches(rom, query) {
-    if (!query) return true;
-    var needle = query.toLowerCase();
-    if (String(rom.name).toLowerCase().indexOf(needle) !== -1) return true;
-    // The path matters in the unidentified column, where 5,000 roms are called
-    // the same thing and only the archive they came from tells them apart.
-    return String(rom.where).toLowerCase().indexOf(needle) !== -1;
+// Lower-cased name and path, the text a search looks in. Worked out once per
+// rom when the library loads, not once per rom per keystroke.
+function needleOf(rom) {
+    return (String(rom.name) + "\n" + String(rom.where)).toLowerCase();
 }
 
-// The rows the right column draws. Every row has the same keys, because a
-// QML model takes its roles from the first element.
-function romRows(roms, index, consoleId, query, isPlayable) {
+function matches(rom, query) {
+    if (!query) return true;
+    // The path matters in the unidentified column, where 5,000 roms are called
+    // the same thing and only the archive they came from tells them apart.
+    return (rom.needle || needleOf(rom)).indexOf(query.toLowerCase()) !== -1;
+}
+
+// Every rom of one console, as rows, sorted. The expensive part -- the walk
+// over the whole library and the locale-aware sort -- depends only on the
+// library and the console, so the store keeps this and a keystroke only
+// filters it (see filterRows).
+//
+// Every row has the same keys, because a QML model takes its roles from the
+// first element.
+function consoleRomRows(roms, index, consoleId, isPlayable) {
     var rows = [];
     var wantsConflicts = consoleId === CONFLICT;
+    var playable = {};
     for (var i = 0; i < roms.length; i++) {
         var rom = roms[i];
+        if (rom.hidden) continue;
         var conflicted = index.conflicts[rom.id] === true;
         if (consoleId === UNKNOWN) {
             if (rom.console !== UNKNOWN) continue;
@@ -97,7 +110,8 @@ function romRows(roms, index, consoleId, query, isPlayable) {
         } else {
             if (rom.console !== consoleId || conflicted) continue;
         }
-        if (!matches(rom, query)) continue;
+        if (!(rom.console in playable))
+            playable[rom.console] = isPlayable(rom.console) === true;
         rows.push({
             id: rom.id,
             name: rom.name,
@@ -109,13 +123,70 @@ function romRows(roms, index, consoleId, query, isPlayable) {
             size: rom.size,
             favorite: rom.favorite === true,
             lastPlayed: rom.lastPlayed || 0,
-            playable: isPlayable(rom.console) === true,
+            playable: playable[rom.console],
             conflicted: conflicted,
-            why: rom.reason
+            why: rom.reason,
+            needle: rom.needle || needleOf(rom)
         });
     }
     rows.sort(compareRoms);
     return rows;
+}
+
+// The rows that match a search, in the order they were already sorted in.
+function filterRows(rows, query) {
+    if (!query) return rows;
+    var needle = query.toLowerCase();
+    var out = [];
+    for (var i = 0; i < rows.length; i++)
+        if (rows[i].needle.indexOf(needle) !== -1) out.push(rows[i]);
+    return out;
+}
+
+// The rows the right column draws.
+function romRows(roms, index, consoleId, query, isPlayable) {
+    return filterRows(consoleRomRows(roms, index, consoleId, isPlayable), query);
+}
+
+// Which consoles can be played right now: {consoleId: true} for every one
+// whose chosen core is installed. Worked out when cores or consoles change,
+// not once per row.
+function playableMap(consoles, cores) {
+    var installed = {};
+    for (var i = 0; i < cores.length; i++) installed[cores[i].id] = true;
+    var out = {};
+    for (var id in consoles) {
+        var entry = consoles[id];
+        if (entry && entry.core && installed[entry.core]) out[id] = true;
+    }
+    return out;
+}
+
+// The catalog as dropdown options, sorted by name.
+function catalogOptions(catalog) {
+    var options = [];
+    for (var key in catalog) options.push({ value: key, label: catalog[key] });
+    options.sort(function (a, b) { return a.label.localeCompare(b.label); });
+    return options;
+}
+
+// Apply what the user decided (user.json) on top of what the scanner
+// detected. `rom.detected` keeps the scanner's answer so this can be applied
+// again, and undone, without reading roms.json again.
+function applyUser(rom, user) {
+    var favorites = (user && user.favorites) || {};
+    var played = (user && user.lastPlayed) || {};
+    var assigned = (user && user.assigned) || {};
+    rom.favorite = favorites[rom.id] === true;
+    rom.lastPlayed = Number(played[rom.id]) || 0;
+    var pick = assigned[rom.id];
+    if (pick) {
+        rom.console = pick;
+        rom.reason = pick === UNKNOWN ? "unknown" : "assigned";
+    } else {
+        rom.console = rom.detected.console || UNKNOWN;
+        rom.reason = rom.detected.reason;
+    }
 }
 
 function prettify(id) {
@@ -151,7 +222,7 @@ function unknownGroups(roms, index) {
     var groups = {};
     for (var i = 0; i < roms.length; i++) {
         var rom = roms[i];
-        if (rom.console !== UNKNOWN) continue;
+        if (rom.hidden || rom.console !== UNKNOWN) continue;
         if (!groups[rom.source])
             groups[rom.source] = { source: rom.source, path: rom.sourcePath || rom.path,
                                    count: 0, exts: {} };

@@ -10,15 +10,21 @@ Standard library only. External tools used: `bsdtar` (libarchive), which
 reads zip, 7z and rar on this system.
 """
 
+import contextlib
+import fcntl
 import hashlib
+import io
 import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
+import threading
 import time
+import zipfile
 
 # ---------------------------------------------------------------- locations
 
@@ -29,10 +35,6 @@ UNKNOWN_ID = "unknown"
 CONFLICT_ID = "conflict"
 CATALOG_SYSTEMS_KEY = "catalog"
 
-_ARCHIVE_TIMEOUT = 60
-# An archive-inside-an-archive is one game, so it is small enough to hold in
-# memory while its contents are listed. The game itself never is.
-MAX_NESTED_BYTES = 192 << 20
 
 
 def plugin_root():
@@ -60,6 +62,13 @@ def cores_json(root=None):
     return os.path.join(state_dir(root), "cores.json")
 
 
+def user_json(root=None):
+    """What the user decided -- favorites, play times, hand-assigned consoles.
+    Small and written often, so it lives apart from roms.json, which is large
+    and only the scanner writes."""
+    return os.path.join(state_dir(root), "user.json")
+
+
 def roms_root():
     """Root of the ROM library. Overridable for testing and for users who
     keep their library somewhere else."""
@@ -69,10 +78,34 @@ def roms_root():
     return os.path.join(os.path.expanduser("~"), "Games", "roms")
 
 
+def cache_root():
+    """cartridge's cache: staged roms, launch logs and scan scratch space.
+
+    Not /tmp: on Arch /tmp is a tmpfs, so a staged 1.5 GB iso there is 1.5 GB
+    of RAM held until the next reboot."""
+    override = os.environ.get("CARTRIDGE_CACHE_DIR")
+    if override:
+        return override
+    base = os.environ.get("XDG_CACHE_HOME") or os.path.join(os.path.expanduser("~"), ".cache")
+    return os.path.join(base, "cartridge")
+
+
 def extract_root():
-    """Where a ROM is staged before RetroArch opens it. Reboot-cleared by
-    choice; the directory is created 0700 and owned by this user only."""
-    return os.path.join("/tmp", "cartridge-%d" % os.getuid())
+    """Where a ROM is staged before RetroArch opens it."""
+    return os.path.join(cache_root(), "staging")
+
+
+def private_dir(path):
+    """Create `path` (and its parents) and make sure it is a real directory,
+    owned by this user, readable by nobody else. Refuses a symlink or a
+    directory someone else planted there first."""
+    os.makedirs(path, mode=0o700, exist_ok=True)
+    info = os.lstat(path)
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid():
+        raise OSError("%s is not a directory owned by you" % path)
+    if info.st_mode & 0o077:
+        os.chmod(path, 0o700)
+    return path
 
 
 
@@ -106,17 +139,107 @@ def write_json(path, payload):
         raise
 
 
+_lock_depth = threading.local()
+
+
+@contextlib.contextmanager
+def state_lock(root=None):
+    """Exclusive lock over the state directory, across processes.
+
+    Every read-modify-write of a state file happens inside it, so the scanner
+    and cartridge-state can never interleave and drop each other's change.
+    Re-entrant within one thread, so helpers that lock can call each other."""
+    depth = getattr(_lock_depth, "value", 0)
+    if depth:
+        _lock_depth.value = depth + 1
+        try:
+            yield
+        finally:
+            _lock_depth.value -= 1
+        return
+    directory = state_dir(root)
+    os.makedirs(directory, exist_ok=True)
+    with open(os.path.join(directory, ".lock"), "a") as handle:
+        fcntl.flock(handle, fcntl.LOCK_EX)
+        _lock_depth.value = 1
+        try:
+            yield
+        finally:
+            _lock_depth.value = 0
+            fcntl.flock(handle, fcntl.LOCK_UN)
+
+
 def update_json(path, mutate, default=None):
-    """Read, hand the document to `mutate`, write it back. Both the scanner
-    and the UI mutate state through here, so a field written by one is never
-    clobbered by the other."""
+    """Read, hand the document to `mutate`, write it back -- under the state
+    lock, so two writers are serialized instead of racing."""
+    with state_lock():
+        document = read_json(path, None)
+        if document is None:
+            document = default() if callable(default) else (default or {})
+        result = mutate(document)
+        payload = document if result is None else result
+        write_json(path, payload)
+        return payload
+
+
+# ---------------------------------------------------------------- user state
+
+def empty_user():
+    return {"version": 1, "favorites": {}, "lastPlayed": {}, "assigned": {}}
+
+
+def _user_from_roms(root):
+    """user.json for a state directory written before user.json existed: the
+    favorites, play times and assignments lived inside roms.json then."""
+    user = empty_user()
+    document = read_json(roms_json(root), {}) or {}
+    for rom in document.get("roms") or []:
+        if not isinstance(rom, dict) or not rom.get("id"):
+            continue
+        if rom.get("favorite"):
+            user["favorites"][rom["id"]] = True
+        try:
+            played = int(rom.get("lastPlayed") or 0)
+        except (TypeError, ValueError):
+            played = 0
+        if played:
+            user["lastPlayed"][rom["id"]] = played
+        if rom.get("reason") == "assigned" and rom.get("console"):
+            user["assigned"][rom["id"]] = rom["console"]
+    return user
+
+
+def load_user(root=None):
+    """user.json, normalized. Created from an older roms.json the first time."""
+    path = user_json(root)
     document = read_json(path, None)
-    if document is None:
-        document = default() if callable(default) else (default or {})
-    result = mutate(document)
-    payload = document if result is None else result
-    write_json(path, payload)
-    return payload
+    if not isinstance(document, dict):
+        with state_lock(root):
+            document = read_json(path, None)
+            if not isinstance(document, dict):
+                document = _user_from_roms(root)
+                write_json(path, document)
+    for key in ("favorites", "lastPlayed", "assigned"):
+        if not isinstance(document.get(key), dict):
+            document[key] = {}
+    return document
+
+
+def update_user(root, mutate):
+    """Change user.json under the state lock."""
+    with state_lock(root):
+        document = load_user(root)
+        result = mutate(document)
+        write_json(user_json(root), document)
+        return result
+
+
+def effective_console(rom, user):
+    """(console, reason) once what the user told cartridge is applied."""
+    assigned = (user.get("assigned") or {}).get(rom.get("id"))
+    if assigned:
+        return assigned, ("unknown" if assigned == UNKNOWN_ID else "assigned")
+    return rom.get("console") or UNKNOWN_ID, rom.get("reason") or ""
 
 
 # ------------------------------------------------------------- console names
@@ -353,22 +476,91 @@ def build_extension_map(cores):
 # disk at play time.
 
 
+def bsdtar_literal(member):
+    """A member name as a bsdtar pattern that matches only itself.
+
+    bsdtar reads the names on its command line as globs, so "Game (U) [!].bin"
+    matches nothing and the extraction fails. Escaping the glob characters is
+    what makes it a literal again."""
+    return re.sub(r"([\\*?\[\]])", r"\\\1", member)
+
+
+# The listing parser depends on bsdtar's date column, which follows the
+# locale. Pinning it keeps the column the width the parser expects.
+_BSDTAR_ENV = dict(os.environ, LC_ALL="C")
+
+# An inner archive bigger than this is spooled to a file in the cache instead
+# of being held in memory. With eight scanner threads that bounds the memory
+# the scan can take, and nothing is ever silently truncated.
+IN_MEMORY_NESTED_BYTES = 64 << 20
+
+
+def scratch_dir():
+    return private_dir(os.path.join(cache_root(), "scratch"))
+
+
 class Archive:
-    def __init__(self, path=None, data=None, ext=None):
+    """One archive, opened once.
+
+    A zip keeps its ZipFile open for as long as this object lives: parsing the
+    central directory of a 5,000 member rom set costs more than reading one of
+    its members, so it must not happen once per member. Use it as a context
+    manager, or call close()."""
+
+    def __init__(self, path=None, data=None, ext=None, owned=False):
         self.path = path
         self.data = data
         self.ext = (ext or ext_of(path or "")).lower()
+        self._owned = owned          # path is a temp file this object deletes
+        self._zipfile = None
+        self._zip_failed = False
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.close()
+        return False
+
+    def close(self):
+        if self._zipfile is not None:
+            try:
+                self._zipfile.close()
+            except Exception:
+                pass
+            self._zipfile = None
+        if self._owned and self.path:
+            try:
+                os.unlink(self.path)
+            except OSError:
+                pass
+            self._owned = False
+
+    @property
+    def readable(self):
+        return self.data is not None or bool(self.path)
 
     @property
     def is_zip(self):
         return self.ext == "zip"
 
+    @property
+    def opens_as_zip(self):
+        """A zip that zipfile can read -- members come out without bsdtar."""
+        return self.is_zip and self._zip() is not None
+
     def _zip(self):
-        import io
-        import zipfile
-        if self.data is not None:
-            return zipfile.ZipFile(io.BytesIO(self.data))
-        return zipfile.ZipFile(self.path, "r")
+        """The open ZipFile, or None when this is not a readable zip."""
+        if self._zipfile is not None or self._zip_failed:
+            return self._zipfile
+        try:
+            if self.data is not None:
+                self._zipfile = zipfile.ZipFile(io.BytesIO(self.data))
+            else:
+                self._zipfile = zipfile.ZipFile(self.path, "r")
+        except Exception:
+            self._zip_failed = True
+        return self._zipfile
 
     def entries(self):
         """[{name, size, crc}] for every file member, directories removed.
@@ -378,16 +570,17 @@ class Archive:
         formats the size is parsed out of `bsdtar -tvf`, which is how cartridge
         tells two same-named roms apart: a game stored twice under the same
         name is not a conflict, the same name with different bytes is."""
-        if self.is_zip:
+        if not self.readable:
+            return None
+        if self.opens_as_zip:
             try:
-                with self._zip() as archive:
-                    return [{"name": info.filename.replace("\\", "/"),
-                             "size": int(info.file_size),
-                             "crc": "%08x" % (info.CRC & 0xFFFFFFFF)}
-                            for info in archive.infolist()
-                            if not info.filename.endswith("/")]
+                return [{"name": info.filename.replace("\\", "/"),
+                         "size": int(info.file_size),
+                         "crc": "%08x" % (info.CRC & 0xFFFFFFFF)}
+                        for info in self._zip().infolist()
+                        if not info.filename.endswith("/")]
             except Exception:
-                pass  # not a zip after all, or damaged: let bsdtar try
+                pass  # damaged: let bsdtar try
         command = ["bsdtar", "-tvf", "-"] if self.data is not None \
             else ["bsdtar", "-tvf", self.path]
         raw = self._bsdtar(command, self.data)
@@ -399,42 +592,104 @@ class Archive:
 
     def read(self, member, limit=1 << 20):
         """One member's bytes, capped. Used for cue sheets, which are tiny."""
-        if self.is_zip:
+        if not self.readable:
+            return None
+        if self.opens_as_zip:
             try:
-                with self._zip() as archive, archive.open(member) as handle:
+                with self._zip().open(member) as handle:
                     return handle.read(limit)
             except Exception:
                 pass
-        command = ["bsdtar", "-xOf", "-", member] if self.data is not None \
-            else ["bsdtar", "-xOf", self.path, member]
-        raw = self._bsdtar(command, self.data)
+        raw = self._bsdtar(self._extract_command(member), self.data)
         return None if raw is None else raw[:limit]
+
+    def _extract_command(self, member):
+        source = "-" if self.data is not None else self.path
+        return ["bsdtar", "-xOf", source, bsdtar_literal(member)]
 
     def extract(self, member, destination):
         """Stream one member to a file. Returns True on success. Never buffers
         the member: a PlayStation 2 iso is over a gigabyte."""
-        if self.is_zip:
+        if not self.readable:
+            return False
+        ok = False
+        if self.opens_as_zip:
             try:
-                with self._zip() as archive, archive.open(member) as source:
+                with self._zip().open(member) as source:
                     with open(destination, "wb") as target:
                         shutil.copyfileobj(source, target, 1 << 20)
-                return True
+                ok = True
             except Exception:
-                return False
-        command = ["bsdtar", "-xOf", "-", member] if self.data is not None \
-            else ["bsdtar", "-xOf", self.path, member]
-        with open(destination, "wb") as target:
-            ok = self._bsdtar(command, self.data, target)
-        if ok is not True:
+                ok = False
+        else:
+            try:
+                with open(destination, "wb") as target:
+                    ok = self._bsdtar(self._extract_command(member), self.data, target) is True
+            except OSError:
+                ok = False
+        if not ok:
+            # Never leave a half-written file where a later run could take it
+            # for the real thing.
             try:
                 os.unlink(destination)
             except OSError:
                 pass
-        return ok is True
+        return ok
+
+    def member_size(self, member):
+        if self.opens_as_zip:
+            try:
+                return int(self._zip().getinfo(member).file_size)
+            except Exception:
+                return None
+        return None
 
     def nested(self, member):
-        """A view of the archive stored inside this one."""
-        return Archive(data=self.read(member, MAX_NESTED_BYTES), ext=ext_of(member))
+        """The archive stored inside this one, as an Archive to close.
+
+        A small one is held in memory. A big one -- or one whose size a zip
+        directory does not state -- is streamed to a scratch file first."""
+        ext = ext_of(member)
+        size = self.member_size(member)
+        if size is not None and size <= IN_MEMORY_NESTED_BYTES:
+            return Archive(data=self.read(member, size + 1), ext=ext)
+        handle, spool = tempfile.mkstemp(dir=scratch_dir(), suffix="." + (ext or "bin"))
+        os.close(handle)
+        if not self.extract(member, spool):
+            return Archive(ext=ext)
+        return Archive(path=spool, ext=ext, owned=True)
+
+    def extract_many(self, members, directory):
+        """Extract several members into `directory` in one pass over the
+        archive, keeping their relative paths. For 7z and rar this is the
+        difference between decompressing a solid archive once and once per
+        member. Returns {member: path on disk} for what came out."""
+        if not members:
+            return {}
+        if self.opens_as_zip:
+            out = {}
+            for member in members:
+                target = _safe_join(directory, member)
+                if target is None:
+                    continue
+                os.makedirs(os.path.dirname(target), exist_ok=True)
+                if self.extract(member, target):
+                    out[member] = target
+            return out
+        handle, listing = tempfile.mkstemp(dir=directory, prefix=".members-")
+        with os.fdopen(handle, "w", encoding="utf-8") as out_list:
+            for member in members:
+                out_list.write(bsdtar_literal(member) + "\n")
+        source = "-" if self.data is not None else self.path
+        self._bsdtar(["bsdtar", "-xf", source, "-C", directory, "-T", listing],
+                     self.data, subprocess.DEVNULL)
+        os.unlink(listing)
+        out = {}
+        for member in members:
+            target = _safe_join(directory, member)
+            if target and os.path.isfile(target):
+                out[member] = target
+        return out
 
     @staticmethod
     def _bsdtar(command, stdin_bytes=None, target=None):
@@ -445,7 +700,8 @@ class Archive:
                 command,
                 stdin=subprocess.PIPE if stdin_bytes is not None else subprocess.DEVNULL,
                 stdout=subprocess.PIPE if target is None else target,
-                stderr=subprocess.DEVNULL)
+                stderr=subprocess.DEVNULL,
+                env=_BSDTAR_ENV)
         except (OSError, ValueError):
             return None if target is None else False
         try:
@@ -457,6 +713,14 @@ class Archive:
         if target is not None:
             return process.returncode == 0
         return out if process.returncode == 0 else None
+
+
+def _safe_join(directory, member):
+    """directory/member, or None when the member would land outside it."""
+    target = os.path.normpath(os.path.join(directory, member))
+    if not target.startswith(os.path.normpath(directory) + os.sep):
+        return None
+    return target
 
 
 # `bsdtar -tvf` prints: perms, uid, gid, nlink, size, a 12 character date, name.

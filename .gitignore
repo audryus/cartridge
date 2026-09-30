@@ -7,3 +7,4 @@ state/
 
 # Python bytecode from running the scripts
 bin/__pycache__/
+tests/__pycache__/

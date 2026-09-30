@@ -20,6 +20,8 @@ Item {
     readonly property string summary: {
         if (!root.store.loaded)
             return "no library scanned yet"
+        // revision, named so a favorite -- changed in place on a rom -- is seen.
+        root.store.revision
         const totals = root.store.totals()
         return totals.total + " rom" + (totals.total === 1 ? "" : "s") +
                " · " + totals.consoles + " console" + (totals.consoles === 1 ? "" : "s") +

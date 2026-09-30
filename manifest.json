@@ -6,9 +6,11 @@
   "author": "audryus",
   "description": "Browse your ROM library from the bar and launch games in RetroArch",
   "kinds": [
+    "service",
     "bar-widget"
   ],
   "entryPoints": {
+    "service": "ui/Service.qml",
     "barWidget": "ui/shell.qml"
   },
   "barWidget": {
