@@ -116,20 +116,22 @@ the second lookup, 7 of your 42 cores would be unnameable and unselectable.
 ## Layout
 
 ```
-manifest.json          bar-widget entry point
+manifest.json          service and bar-widget entry points
+ui/Service.qml         the one shared store, and the IPC target
 ui/shell.qml           the bar button and the two windows
 ui/Cartridge.qml       the library window: toolbar, two columns
 ui/Toolbar.qml         config and refresh, and what the library looks like
 ui/ConsoleColumn.qml   left: consoles found, then Unidentified
 ui/RomColumn.qml       right: search, and the roms of one console
 ui/ConfigPopup.qml     the core-per-console window
-ui/CartridgeData.qml   state, processes, the three JSON files
+ui/CartridgeData.qml   state, processes, the four JSON files
 ui/CartridgeModel.js   sorting, search, conflicts — pure, and tested
 bin/cartridge-scan.py    find the games, write the state
 bin/cartridge-state.py   favorite, identify, pick a core
 bin/cartridge-play.py    stage the game, start RetroArch
 bin/cartridge_lib.py     extension table, archive reading, JSON state
-state/                   roms.json, consoles.json, cores.json (gitignored)
+state/                   roms.json, user.json, consoles.json, cores.json, .lock (gitignored)
+tests/                   scanner, regression and model tests; smoke_shell.sh for the live shell
 assets/                  the two screenshots above
 ```
 
@@ -198,8 +200,14 @@ Override the library with `CARTRIDGE_ROMS_ROOT`, the state directory with
 ```bash
 make test        # scanner tests, regression tests for state/archives/staging, model tests
 make lint-qml    # parse every QML file the way the shell does
+make smoke       # drive the running shell over IPC and check its log (SMOKE_REFRESH=1 also rescans)
 make check
 ```
+
+`make test` runs on every push and pull request in GitHub Actions
+(`.github/workflows/test.yml`), in an Arch container with the same
+`libretro-core-info` and `libarchive` the plugin uses. The QML wiring needs a
+running Omarchy shell, so it is covered by `make smoke`, run by hand.
 
 The scanner tests build a library in a temp directory — loose files, cue and
 bin, a zip in a zip, a member name with `[b1]` in it, junk next to a rom — and
@@ -208,6 +216,14 @@ assert what cartridge does with it. The model tests run in node against the real
 
 ## Known limits
 
+- Two copies of a game with the same name and size are compared by CRC when
+  there is one to compare: a zip member carries it, and a loose file gets one
+  worked out when needed. A 7z or rar member has none, so against one of those
+  equal size is taken as equal bytes.
+- The UI reads `roms.json` again only when a scan says it replaced it. Restoring
+  or editing that file by hand needs a Refresh to show.
+- Without the shared service -- under a replacement bar, which gets no service
+  -- every bar registers the IPC target and the first one answers.
 - Unidentified is large by nature: `.bin` is claimed by dozens of consoles, so a
   complete 32X rom set lands there in one piece — 5,288 of your roms did at
   first. The column has a per-file dropdown to place a whole archive at once,

@@ -1,0 +1,25 @@
+name: test
+
+on:
+  push:
+    branches: [trunk]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    # Arch, like the machines cartridge runs on: the extension table is built
+    # from the system's libretro-core-info, and bsdtar comes from libarchive.
+    container: archlinux:latest
+    steps:
+      - name: Install dependencies
+        run: pacman -Syu --noconfirm --needed git make python nodejs libarchive libretro-core-info
+
+      - uses: actions/checkout@v4
+
+      - name: Check manifest.json parses
+        run: python -m json.tool manifest.json > /dev/null
+
+      - name: Run the scanner, regression and model tests
+        run: make test
