@@ -45,11 +45,13 @@ def load_roms(root):
 
 def set_favorite(root, rom_id, value):
     """Only user.json is written: a favorite is a few bytes, and must not cost
-    a rewrite of the whole library."""
-    if find_rom(load_roms(root), rom_id) is None:
-        raise KeyError(rom_id)
+    a rewrite of the whole library.
 
+    The rom is looked up inside the lock, so a scan that replaces roms.json
+    cannot land between the check and the write."""
     def mutate(user):
+        if find_rom(load_roms(root), rom_id) is None:
+            raise KeyError(rom_id)
         if value:
             user["favorites"][rom_id] = True
         else:
@@ -75,10 +77,10 @@ def assign_console(root, rom_id, console_id):
     back and detection's answer -- already in roms.json -- shows again at once,
     with no rescan needed."""
     catalog = check_console(root, console_id)
-    if find_rom(load_roms(root), rom_id) is None:
-        raise KeyError(rom_id)
 
     def mutate(user):
+        if find_rom(load_roms(root), rom_id) is None:
+            raise KeyError(rom_id)
         if console_id == AUTO:
             user["assigned"].pop(rom_id, None)
         else:
@@ -116,11 +118,13 @@ def assign_container(root, container, console_id):
     is worse, so this is only ever offered for one container at a time and the
     reply says exactly how many roms it touched."""
     catalog = check_console(root, console_id)
-    inside = [rom for rom in load_roms(root).get("roms") or []
-              if rom.get("path") == container and not rom.get("hidden")]
     state = {"touched": 0, "left": 0}
 
     def mutate(user):
+        # Read under the lock: the roms of this container as the latest scan
+        # left them, not as they were before one finished.
+        inside = [rom for rom in load_roms(root).get("roms") or []
+                  if rom.get("path") == container and not rom.get("hidden")]
         assigned = user["assigned"]
         for rom in inside:
             if console_id == AUTO:

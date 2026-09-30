@@ -50,8 +50,15 @@ Item {
 
     function call(method) {
         const widget = target()
-        if (widget && typeof widget[method] === "function")
-            widget[method]()
+        if (!widget) {
+            console.warn("[cartridge] IPC " + method + ": no bar widget is registered")
+            return
+        }
+        if (typeof widget[method] !== "function") {
+            console.warn("[cartridge] IPC " + method + ": the bar widget has no such method")
+            return
+        }
+        widget[method]()
     }
 
     // Bind a key to these, e.g.
@@ -68,7 +75,8 @@ Item {
             return JSON.stringify({
                 scanning: cartridgeStore.scanning,
                 roms: cartridgeStore.roms.length,
-                problem: cartridgeStore.problem !== ""
+                problem: cartridgeStore.problem !== "",
+                shared: true
             })
         }
     }

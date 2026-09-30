@@ -554,7 +554,9 @@ QtObject {
             onStreamFinished: store.finishScan(String(text || ""))
         }
         stderr: SplitParser {
-            onRead: data => console.warn("[cartridge]", data)
+            // The scanner narrates its progress on stderr: information, not
+            // a warning.
+            onRead: data => console.info("[cartridge]", data)
         }
         // A process that cannot start still reports an exit, so a missing or
         // non-executable script surfaces as "the scan did not report back"

@@ -177,8 +177,12 @@ def stage(rom):
     # Start from an empty directory, marker included: until every member is
     # written, nothing in here may pass for a complete copy.
     for name in os.listdir(target_dir):
+        path = os.path.join(target_dir, name)
+        if os.path.isdir(path) and not os.path.islink(path):
+            shutil.rmtree(path, ignore_errors=True)
+            continue
         try:
-            os.unlink(os.path.join(target_dir, name))
+            os.unlink(path)
         except OSError:
             pass
 

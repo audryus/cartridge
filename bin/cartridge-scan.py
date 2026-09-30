@@ -189,6 +189,7 @@ def scan_nested(detector, job):
                 with outer.nested(member) as inner:
                     entries = inner.entries()
                     if entries is None:
+                        log("cartridge: cannot read %s inside %s" % (member, path))
                         continue
                     roms.extend(process_listing(detector, path, entries, member, 2, inner.read))
             return roms
@@ -268,6 +269,26 @@ def fingerprint(path):
     except OSError:
         return None
     return [int(info.st_size), int(info.st_mtime_ns)]
+
+
+def folder_fingerprint(dirpath, names):
+    """A folder's fingerprint, plus the newest mtime and the total size of the
+    files in it. The folder's own mtime only moves when a file is added,
+    removed or renamed; a file rewritten in place moves neither, and would
+    otherwise keep its old size and CRC forever."""
+    mark = fingerprint(dirpath)
+    if mark is None:
+        return None
+    newest = 0
+    total = 0
+    for name in names:
+        try:
+            info = os.stat(os.path.join(dirpath, name))
+        except OSError:
+            continue
+        newest = max(newest, int(info.st_mtime_ns))
+        total += int(info.st_size)
+    return mark + [newest, total]
 
 
 # ------------------------------------------------------------------ persist
@@ -489,7 +510,7 @@ def main():
     for dirpath, names in loose.items():
         if not names:
             continue
-        mark = fingerprint(dirpath)
+        mark = folder_fingerprint(dirpath, names)
         containers[dirpath] = mark
         if mark and known_containers.get(dirpath) == mark:
             roms.extend(by_container.get(dirpath, []))
