@@ -1,0 +1,9 @@
+# Runtime state written by bin/cartridge-scan, bin/cartridge-state and
+# bin/cartridge-play. It records absolute paths into your ROM library, so it
+# stays out of git.
+state/
+
+# Extracted ROMs staged for RetroArch live in /tmp/cartridge-$UID, not here.
+
+# Python bytecode from running the scripts
+bin/__pycache__/
