@@ -786,6 +786,21 @@ def cue_companions(cue_bytes, member_names):
 
 # --------------------------------------------------------------------- misc
 
+def crc_of_files(paths):
+    """CRC32 of the files in `paths`, read one after the other, as the
+    lower-case hex a zip central directory gives. None if one is unreadable."""
+    import zlib
+    crc = 0
+    try:
+        for path in paths:
+            with open(path, "rb") as handle:
+                for block in iter(lambda: handle.read(1 << 20), b""):
+                    crc = zlib.crc32(block, crc)
+    except OSError:
+        return None
+    return "%08x" % (crc & 0xFFFFFFFF)
+
+
 def stable_id(parts):
     digest = hashlib.sha1("\x1f".join(parts).encode("utf-8", "replace")).hexdigest()
     return digest[:16]

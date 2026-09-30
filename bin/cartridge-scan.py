@@ -360,13 +360,36 @@ def write_cores(path, cores, installed):
 def same_content(a, b):
     """Whether two roms with the same name are the same bytes.
 
-    zips carry a CRC in their central directory, which is exact and free. For
-    7z and rar there is no CRC, so equal size is the best signal available."""
+    zips carry a CRC in their central directory, which is exact and free, and
+    a loose file gets one worked out when it needs comparing (see
+    fill_loose_crcs). 7z and rar members have no CRC, so against one of those
+    equal size is the best signal available."""
     if a.get("size", 0) != b.get("size", 0):
         return False
     if a.get("crc") and b.get("crc"):
         return a["crc"] == b["crc"]
     return True
+
+
+def fill_loose_crcs(copies):
+    """Give the loose copies in a group of same-name, same-size roms a CRC, so
+    they are compared by their bytes and not by their size alone.
+
+    Only when there is something exact to compare with -- another loose copy,
+    or a zip member, which carries a CRC. Against a 7z or rar member (no CRC)
+    hashing would buy nothing. The CRC is kept in the rom record, so an
+    unchanged folder is not hashed again on the next scan."""
+    loose = [rom for rom in copies if rom["depth"] == 0 and not rom.get("crc")]
+    if not loose:
+        return
+    exact = [rom for rom in copies if rom.get("crc")]
+    if len(loose) < 2 and not exact:
+        return
+    for rom in loose:
+        names = [rom["entry"]] + (list(rom.get("extras") or []) if rom["kind"] == "cue" else [])
+        crc = lib.crc_of_files([os.path.join(rom["path"], name) for name in names])
+        if crc:
+            rom["crc"] = crc
 
 
 def mark_duplicates(roms, user):
@@ -391,6 +414,9 @@ def mark_duplicates(roms, user):
         if len(copies) == 1:
             continue
         first = copies[0]
+        if any(first.get("size", 0) != other.get("size", 0) for other in copies[1:]):
+            continue
+        fill_loose_crcs(copies)
         if any(not same_content(first, other) for other in copies[1:]):
             continue
         keeper = min(copies, key=lambda rom: (rom["depth"], len(rom["path"]), rom["id"]))
