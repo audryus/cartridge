@@ -96,7 +96,7 @@ BarWidget {
     BarIconButton {
         id: button
         bar: root.bar
-        text: "\uF103"            // nf-fa-gamepad
+        text: "\uec17"            // gamepad, outside the nf-fa range
         tooltipText: "Cartridge"
         onPressed: function(mouseButton) {
             if (mouseButton === Qt.RightButton)
