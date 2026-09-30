@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "id": "audryus.cartridge",
+  "name": "Cartridge",
+  "version": "0.1.0",
+  "author": "audryus",
+  "description": "Browse your ROM library from the bar and launch games in RetroArch",
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "ui/shell.qml"
+  },
+  "barWidget": {
+    "displayName": "Cartridge",
+    "description": "Browse your ROM library from the bar and launch games in RetroArch",
+    "category": "Games",
+    "allowMultiple": false,
+    "defaultSection": "right"
+  }
+}
