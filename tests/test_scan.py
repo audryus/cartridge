@@ -36,6 +36,11 @@ def load_script(name):
 
 
 cartridge_scan = load_script("cartridge-scan.py")
+cartridge_state = load_script("cartridge-state.py")
+
+
+def visible(document):
+    return [rom for rom in document["roms"] if not rom.get("hidden")]
 
 
 def zip_bytes(entries):
@@ -180,8 +185,12 @@ class ScannerTest(unittest.TestCase):
             handle.write(payload)
         write_zip(os.path.join(self.library, "n64.zip"), {"1080F.V64": payload})
         document = self.scan()
-        self.assertEqual(len(document["roms"]), 1)
-        self.assertEqual(document["roms"][0]["depth"], 0)
+        shown = visible(document)
+        self.assertEqual(len(shown), 1)
+        self.assertEqual(shown[0]["depth"], 0)
+        # The archived copy is still recorded, pointing at the one shown.
+        hidden = [rom for rom in document["roms"] if rom.get("hidden")]
+        self.assertEqual([rom["hidden"] for rom in hidden], [shown[0]["id"]])
 
     def test_same_name_different_bytes_is_kept_both_times(self):
         write_zip(os.path.join(self.library, "dupes.zip"), {
@@ -199,20 +208,16 @@ class ScannerTest(unittest.TestCase):
         document = self.scan()
         rom = document["roms"][0]
 
-        path = lib.roms_json()
-        with open(path, encoding="utf-8") as handle:
-            state = json.load(handle)
-        state["roms"][0]["favorite"] = True
-        state["roms"][0]["reason"] = "assigned"
-        state["roms"][0]["console"] = "sega-genesis-mega-drive"
-        lib.write_json(path, state)
+        cartridge_state.set_favorite(ROOT, rom["id"], True)
+        cartridge_state.assign_console(ROOT, rom["id"], "sega-genesis-mega-drive")
 
         again = self.scan()
         kept = again["roms"][0]
-        self.assertTrue(kept["favorite"])
-        self.assertEqual(kept["console"], "sega-genesis-mega-drive")
-        self.assertEqual(kept["reason"], "assigned")
+        user = lib.load_user()
         self.assertEqual(rom["id"], kept["id"])
+        self.assertTrue(user["favorites"].get(kept["id"]))
+        self.assertEqual(lib.effective_console(kept, user),
+                         ("sega-genesis-mega-drive", "assigned"))
 
     def test_unchanged_containers_are_not_read_again(self):
         write_zip(os.path.join(self.library, "set.zip"), {"Game.smc": b"x" * 16})

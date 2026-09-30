@@ -67,10 +67,11 @@ Your library has the same game more than once — every SNES game is both a loos
 zip and a member of a 986-zip pack, all 161 N64 roms are loose *and* split
 across seven rars. Cartridge keeps one copy:
 
-- **Same name, same bytes** → a duplicate. The shallowest copy wins, so the
-  loose file beats the archived one and needs no unpacking. Whatever the
-  dropped copies had earned (a favorite, a play time) moves to the one that
-  stays. On your library that removed 1151 roms: 8133 remain out of 9284 found.
+- **Same name, same bytes** → a duplicate. The shallowest copy is shown, so
+  the loose file beats the archived one and needs no unpacking. The other
+  copies stay in `roms.json`, marked `hidden`, so deleting the loose file
+  brings the archived one back on the next scan. Whatever a hidden copy had
+  earned (a favorite, a play time) moves to the one shown. On your library that removed 1151 roms: 8133 remain out of 9284 found.
 - **Same name, different bytes** → a **Conflict**. Copies are compared by CRC
   from the zip central directory, and by size where the format has no CRC. Your
   library has two of these, `Fatal Labyrinth (JU) [!]` and `ResQ`, and both
@@ -82,11 +83,14 @@ across seven rars. Cartridge keeps one copy:
 
 RetroArch cannot open a zip inside a zip, and a `.cue` is useless without the
 `.bin` next to it. So Play stages the game first: the members that make it up
-are streamed out to `/tmp/cartridge-$UID/<rom>/`, and RetroArch is pointed at the
-real file. A loose file is played where it lies.
+are streamed out to `~/.cache/cartridge/staging/<rom>/`, and RetroArch is pointed
+at the real file. A loose file is played where it lies. Not `/tmp`: on Arch that
+is a tmpfs, so a staged iso there is RAM held until reboot.
 
 The staged copy is reused until the archive it came from changes, so replaying a
-1.5 GB iso is instant the second time. Then:
+1.5 GB iso is instant the second time. Staged roms are capped at 16 GB in total
+(`CARTRIDGE_STAGING_MAX`, in bytes); the least recently played make room, and a
+game that does not fit on the disk is refused before anything is written. Then:
 
 ```
 retroarch -L /usr/lib/libretro/mupen64plusnext_libretro.so /path/to/game.v64
@@ -94,7 +98,7 @@ retroarch -L /usr/lib/libretro/mupen64plusnext_libretro.so /path/to/game.v64
 
 No flags, so fullscreen, shaders and everything else stay whatever
 `~/.config/retroarch/retroarch.cfg` says. RetroArch's log for each launch is at
-`/tmp/cartridge-$UID/logs/`, not next to your roms.
+`~/.cache/cartridge/logs/`, not next to your roms.
 
 ### Cores
 
@@ -157,17 +161,24 @@ read again. Adding one game to an existing ROM set re-reads one archive.
 
 ## State
 
-Three JSON files in `state/`, written atomically:
+Four JSON files in `state/`, written atomically, each change made under a lock
+(`state/.lock`) so the scanner and the UI never drop each other's writes:
 
-- `roms.json` — every rom: where it is, which console, its extension, its size
-  and CRC, whether it is a favorite, when it was last played. About 3 MB for
-  8000 roms, plus a size and mtime per file so a rescan knows what to skip.
+- `roms.json` — every rom as the scanner found it: where it is, which console
+  detection says, its extension, its size and CRC. About 3 MB for 8000 roms,
+  plus a size and mtime per file so a rescan knows what to skip. Only the
+  scanner writes it.
+- `user.json` — what you decided: favorites, play times, consoles you assigned
+  by hand, keyed by rom id. Small, and the only file a favorite or a launch
+  rewrites. Created from an older `roms.json` the first time.
 - `consoles.json` — every console cartridge knows about, which core you picked,
   and the full catalogue of consoles for the Unidentified picker.
 - `cores.json` — the cores installed on this machine.
 
-Favorites, play times and hand-assigned consoles survive a rescan: a rom's id is
-a hash of where it lives, so a rom that did not move keeps its state.
+Favorites, play times and hand-assigned consoles survive a rescan, including one
+running while you change them: a rom's id is a hash of where it lives, so a rom
+that did not move keeps its state. A console with no roms in a scan keeps the
+core you picked for it, marked `present: false`.
 
 An answer given to the wrong file is undone from the command line — the
 identifier is the rom id in `roms.json`, or the archive path for a whole file:
@@ -177,16 +188,15 @@ identifier is the rom id in `roms.json`, or the archive path for a whole file:
 ./bin/cartridge-state.py container <archive> auto # same, for every rom in a file
 ```
 
-`auto` also drops that file's cached size and mtime, so the next scan reads it
-again and answers for real.
+Detection's answer is kept in `roms.json`, so `auto` takes effect at once.
 
-Override the library with `CARTRIDGE_ROMS_ROOT`, and the state directory with
-`CARTRIDGE_STATE_DIR`.
+Override the library with `CARTRIDGE_ROMS_ROOT`, the state directory with
+`CARTRIDGE_STATE_DIR`, and the cache with `CARTRIDGE_CACHE_DIR`.
 
 ## Tests
 
 ```bash
-make test        # 18 scanner tests against fixtures, 15 model tests
+make test        # scanner tests, regression tests for state/archives/staging, model tests
 make lint-qml    # parse every QML file the way the shell does
 make check
 ```
@@ -220,12 +230,14 @@ Decisions taken while building this, and why:
 | Question | Answer | Why |
 | --- | --- | --- |
 | Surface | `bar-widget`, popup windows | Compact launcher belongs in the bar; the library needs a surface, not a bar row |
-| State owner | `state/*.json` in the plugin | One writer at a time, and it travels with the plugin |
-| Extraction cache | `/tmp/cartridge-$UID`, 0700 | A PS2 iso is 1.5 GB; it does not belong in the repo or on the dev disk |
+| Surface state | one `service` for the shell, bar widgets per monitor | The library is parsed and watched once, and the IPC target registered once |
+| State owner | `state/*.json` in the plugin, under a lock | One writer at a time, and it travels with the plugin |
+| User vs scan state | `user.json` apart from `roms.json` | A favorite should write bytes, not the 3 MB library |
+| Extraction cache | `~/.cache/cartridge/staging`, 0700, 16 GB LRU | A PS2 iso is 1.5 GB; `/tmp` is RAM on this system |
 | Launch flags | none, beyond `-L` | `retroarch.cfg` is the user's, not cartridge's |
 | Extension table | derived from `libretro-core-info` | The alternative is a table that rots |
 | Ambiguous extension | Unidentified, never a guess | `.bin` is Genesis or PlayStation; cartridge is not going to pick |
-| Duplicates | shallowest copy wins | The loose file needs no unpacking |
+| Duplicates | shallowest copy shown, others hidden | The loose file needs no unpacking |
 | Conflicts | same name, different bytes | A game you own twice is not a decision to make |
 | Favorites / recent / rest | in that order, then by name | As asked |
 | Installed cores | matched by corename and by file name | Arch installs cores under old file names |

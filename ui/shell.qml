@@ -9,6 +9,7 @@
 // panel pulls focus for itself, so the search box and every dropdown work
 // wherever the mouse happens to be. Clicking outside closes, Escape closes.
 import QtQuick
+import QtQml.Models
 import Quickshell
 import Quickshell.Io
 import Quickshell.Wayland
@@ -25,18 +26,52 @@ BarWidget {
     readonly property bool opened: libraryOpen
     readonly property bool configuring: configOpen
 
-    // One store for both windows, created here rather than inside either one,
-    // so a core picked in the config popup is already there when the library
-    // comes back up.
+    // The store lives in the plugin's service (Service.qml): one for the whole
+    // shell, shared by the bar on every monitor, instead of one per bar each
+    // parsing the same library. If the host offers no service -- a replacement
+    // bar gets no service facade -- this widget falls back to a store of its
+    // own, which stays inert while the shared one is there.
+    readonly property var service: root.bar && root.bar.shell
+        && typeof root.bar.shell.serviceFor === "function"
+        ? root.bar.shell.serviceFor("audryus.cartridge") : null
+    readonly property bool shared: !!(root.service && root.service.store)
+    readonly property var store: root.shared ? root.service.store : fallbackStore
+
     CartridgeData {
-        id: store
+        id: fallbackStore
+        active: !root.shared
+    }
+
+    property var registeredWith: null
+
+    function syncRegistration() {
+        if (root.registeredWith === root.service)
+            return
+        if (root.registeredWith && typeof root.registeredWith.unregister === "function")
+            root.registeredWith.unregister(root)
+        root.registeredWith = root.service
+        if (root.service && typeof root.service.register === "function")
+            root.service.register(root)
+    }
+
+    onServiceChanged: root.syncRegistration()
+    Component.onCompleted: root.syncRegistration()
+    Component.onDestruction: {
+        if (root.registeredWith && typeof root.registeredWith.unregister === "function")
+            root.registeredWith.unregister(root)
+    }
+
+    function markUsed() {
+        if (root.shared && typeof root.service.used === "function")
+            root.service.used(root)
     }
 
     property bool libraryOpen: false
     property bool configOpen: false
 
     function open() {
-        store.ensureLoaded()
+        root.markUsed()
+        root.store.ensureLoaded()
         // A bar widget exists once per monitor. Closing the other instances
         // first is what keeps one click from opening the library twice.
         root.broadcast("closeWindows")
@@ -70,7 +105,8 @@ BarWidget {
     }
 
     function openConfig() {
-        store.ensureLoaded()
+        root.markUsed()
+        root.store.ensureLoaded()
         root.broadcast("closeWindows")
         libraryOpen = false
         configOpen = true
@@ -78,19 +114,32 @@ BarWidget {
 
     function refresh() {
         open()
-        store.refresh()
+        root.store.refresh()
     }
 
-    // Bind a key to these, e.g.
-    //   omarchy shell audryus.cartridge open
-    IpcHandler {
-        target: "audryus.cartridge"
+    // Only without the shared service: Service.qml owns the IPC target, once
+    // for the whole shell. The service loads asynchronously, so this waits
+    // before deciding it is not coming -- a handler created up front would
+    // register the same target once per monitor and race the service's.
+    property bool serviceMissing: false
 
-        function open(): void { root.open() }
-        function close(): void { root.close() }
-        function toggle(): void { root.toggle() }
-        function config(): void { root.openConfig() }
-        function refresh(): void { root.refresh() }
+    Timer {
+        interval: 3000
+        running: !root.shared && !root.serviceMissing
+        onTriggered: root.serviceMissing = !root.shared
+    }
+
+    Instantiator {
+        model: root.serviceMissing && !root.shared ? 1 : 0
+        delegate: IpcHandler {
+            target: "audryus.cartridge"
+
+            function open(): void { root.open() }
+            function close(): void { root.close() }
+            function toggle(): void { root.toggle() }
+            function config(): void { root.openConfig() }
+            function refresh(): void { root.refresh() }
+        }
     }
 
     BarIconButton {
@@ -207,7 +256,7 @@ BarWidget {
                     anchors.rightMargin: libraryCard.contentRightInset
                     anchors.bottomMargin: libraryCard.contentBottomInset
                     anchors.leftMargin: libraryCard.contentLeftInset
-                    store: store
+                    store: root.store
                     onConfigRequested: root.openConfig()
                     onCloseRequested: root.close()
                 }
@@ -262,15 +311,22 @@ BarWidget {
                     event.accepted = true
                 }
 
-                ConfigPopup {
+                // Only built while the window is open: hidden, it would
+                // still rebuild its rows every time the library changed.
+                Loader {
                     id: configContent
                     anchors.fill: parent
                     anchors.topMargin: configCard.contentTopInset
                     anchors.rightMargin: configCard.contentRightInset
                     anchors.bottomMargin: configCard.contentBottomInset
                     anchors.leftMargin: configCard.contentLeftInset
-                    store: store
-                    onBackRequested: root.closeConfig()
+                    active: root.configOpen
+                    sourceComponent: Component {
+                        ConfigPopup {
+                            store: root.store
+                            onBackRequested: root.closeConfig()
+                        }
+                    }
                 }
             }
         }
@@ -278,7 +334,7 @@ BarWidget {
 
     // A game is starting: get out of the way so RetroArch is visible.
     Connections {
-        target: store
+        target: root.store
         function onPlayed() { root.close() }
     }
 }

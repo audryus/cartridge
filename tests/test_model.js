@@ -18,7 +18,8 @@ const file = path.join(root, "ui", "CartridgeModel.js");
 vm.runInContext(fs.readFileSync(file, "utf8") + `
 ;globalThis.api = { reindex, sameContent, romRows, consoleRows, compareRoms,
     coreOptions, unknownGroups, matches, formatWhen, formatSize, prettify,
-    hasCore, coreLabel, UNKNOWN, CONFLICT };
+    hasCore, coreLabel, consoleRomRows, filterRows, playableMap, catalogOptions,
+    applyUser, needleOf, UNKNOWN, CONFLICT };
 `, sandbox, { filename: file });
 const M = sandbox.api;
 
@@ -243,6 +244,66 @@ test("play times are relative, in seconds, like the stored timestamps", () => {
     assert.strictEqual(M.formatWhen(ago(86400 * 3), now), "3d ago");
     assert.strictEqual(M.formatWhen(ago(86400 * 60), now), "2mo ago");
     assert.strictEqual(M.formatWhen(0, now), "");
+});
+
+// ------------------------------------------------- cached rows and filtering
+
+test("filtering the cached rows gives the same answer as building them afresh", () => {
+    const roms = [];
+    for (let i = 0; i < 300; i++)
+        roms.push(rom({ name: "Game " + i, where: "set.zip › G" + i + ".v64",
+                        favorite: i % 7 === 0, lastPlayed: i % 5 ? 0 : i }));
+    const index = M.reindex(roms);
+    const base = M.consoleRomRows(roms, index, "nintendo-64", always);
+    for (const query of ["", "game 1", "G2", "set.zip", "nothing"]) {
+        const fresh = M.romRows(roms, index, "nintendo-64", query, always);
+        assert.deepStrictEqual(Array.from(M.filterRows(base, query), r => r.id),
+                               Array.from(fresh, r => r.id), query);
+    }
+});
+
+test("playability is asked once per console, not once per rom", () => {
+    const roms = [];
+    for (let i = 0; i < 50; i++) roms.push(rom({ name: "G" + i }));
+    let asked = 0;
+    M.consoleRomRows(roms, M.reindex(roms), "nintendo-64", () => { asked++; return true; });
+    assert.strictEqual(asked, 1);
+});
+
+test("the playable map needs a chosen core that is installed", () => {
+    const consoles = { a: { core: "x" }, b: { core: "gone" }, c: { core: "" } };
+    assert.deepStrictEqual(Object.assign({}, M.playableMap(consoles, [{ id: "x" }])), { a: true });
+});
+
+test("hidden duplicates are neither listed, counted nor grouped", () => {
+    const roms = [
+        rom({ id: "keep", name: "Game" }),
+        rom({ id: "copy", name: "Game", hidden: "keep", depth: 1 }),
+        rom({ id: "u", console: "unknown", hidden: "x", source: "a.zip" })
+    ];
+    const index = M.reindex(roms);
+    assert.strictEqual(index.counts["nintendo-64"], 1);
+    assert.strictEqual(index.counts.unknown, undefined);
+    assert.deepStrictEqual(Array.from(M.romRows(roms, index, "nintendo-64", "", always), r => r.id),
+                           ["keep"]);
+    assert.strictEqual(M.unknownGroups(roms, index).length, 0);
+});
+
+test("user state is applied over detection and can be taken back", () => {
+    const r = rom({ console: "unknown", reason: "ambiguous" });
+    r.detected = { console: "unknown", reason: "ambiguous" };
+    M.applyUser(r, { favorites: { [r.id]: true }, lastPlayed: { [r.id]: 42 },
+                     assigned: { [r.id]: "nintendo-64" } });
+    assert.deepStrictEqual([r.favorite, r.lastPlayed, r.console, r.reason],
+                           [true, 42, "nintendo-64", "assigned"]);
+    M.applyUser(r, { favorites: {}, lastPlayed: {}, assigned: {} });
+    assert.deepStrictEqual([r.favorite, r.lastPlayed, r.console, r.reason],
+                           [false, 0, "unknown", "ambiguous"]);
+});
+
+test("catalog options are sorted by name", () => {
+    assert.deepStrictEqual(Array.from(M.catalogOptions({ b: "Zeta", a: "Alpha" }), o => o.value),
+                           ["a", "b"]);
 });
 
 console.log("\n" + (ran - failures) + "/" + ran + " passed");

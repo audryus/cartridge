@@ -2,9 +2,9 @@
 """Change cartridge state: favorite a rom, tell cartridge what an unknown rom
 is, pick the core for a console.
 
-Both the scanner and this script write state, and both go through
-lib.update_json, so a change made here survives the next scan and a scan never
-drops a choice made here.
+What the user decides goes to user.json, which the scanner only reads, and
+every write happens under the state lock -- so a change made here survives the
+next scan, even one already running, and a scan never drops it.
 
   cartridge-state favorite <romId> <0|1>
   cartridge-state assign   <romId> <consoleId|auto>
@@ -12,8 +12,8 @@ drops a choice made here.
   cartridge-state core     <consoleId> <coreId|->
 
 "auto" forgets what cartridge was told and goes back to detection, which is the
-way out of an answer you gave to the wrong file. The change lands on the next
-scan; cartridge-state re-detects nothing by itself.
+way out of an answer you gave to the wrong file. Detection's answer is already
+in roms.json, so it shows again straight away.
 
 stdout is a single JSON line: {"ok": true, ...} or {"ok": false, "error": ...}
 """
@@ -39,78 +39,60 @@ def find_rom(document, rom_id):
     return None
 
 
-def set_favorite(root, rom_id, value):
-    state = {}
+def load_roms(root):
+    return lib.read_json(lib.roms_json(root), {}) or {}
 
-    def mutate(document):
-        rom = find_rom(document, rom_id)
-        if rom is None:
-            return document
-        rom["favorite"] = bool(value)
-        state["rom"] = rom
-    lib.update_json(lib.roms_json(root), mutate, default=lambda: {"roms": []})
-    if "rom" not in state:
+
+def set_favorite(root, rom_id, value):
+    """Only user.json is written: a favorite is a few bytes, and must not cost
+    a rewrite of the whole library."""
+    if find_rom(load_roms(root), rom_id) is None:
         raise KeyError(rom_id)
+
+    def mutate(user):
+        if value:
+            user["favorites"][rom_id] = True
+        else:
+            user["favorites"].pop(rom_id, None)
+    lib.update_user(root, mutate)
     return {"ok": True, "id": rom_id, "favorite": bool(value)}
 
 
 AUTO = "auto"
 
 
-def forget_container(root, path):
-    """Make the next scan read this file again.
-
-    A forgotten answer lives in the rom records the last scan cached for that
-    archive. Clearing the console in place is not enough: the reused records
-    still hold the emptied value. Dropping the fingerprint is what sends the
-    archive back through detection, which is the only place that can answer it
-    again."""
-    if not path:
-        return
-
-    def mutate(document):
-        containers = document.get("containers")
-        if isinstance(containers, dict):
-            containers.pop(path, None)
-    lib.update_json(lib.roms_json(root), mutate, default=lambda: {"roms": []})
-
-
-def assign_console(root, rom_id, console_id):
-    """Tell cartridge what an unidentified rom is. The choice sticks: the
-    scanner keeps any rom whose reason is 'assigned'. "auto" gives the answer
-    back and lets detection decide again."""
+def check_console(root, console_id):
     consoles = lib.read_json(lib.consoles_json(root), {}) or {}
     catalog = consoles.get("catalog") or {}
     if console_id not in (lib.UNKNOWN_ID, AUTO) and console_id not in catalog:
         raise KeyError(console_id)
-    state = {}
+    return catalog
 
-    def mutate(document):
-        rom = find_rom(document, rom_id)
-        if rom is None:
-            return document
-        if console_id == AUTO:
-            rom["console"] = ""
-            rom["reason"] = "auto"
-        else:
-            rom["console"] = console_id
-            rom["reason"] = "unknown" if console_id == lib.UNKNOWN_ID else "assigned"
-        state["rom"] = rom
-    lib.update_json(lib.roms_json(root), mutate, default=lambda: {"roms": []})
-    if "rom" not in state:
+
+def assign_console(root, rom_id, console_id):
+    """Tell cartridge what an unidentified rom is. The choice sticks: it lives
+    in user.json, which the scanner never overwrites. "auto" gives the answer
+    back and detection's answer -- already in roms.json -- shows again at once,
+    with no rescan needed."""
+    catalog = check_console(root, console_id)
+    if find_rom(load_roms(root), rom_id) is None:
         raise KeyError(rom_id)
-    rom = state["rom"]
+
+    def mutate(user):
+        if console_id == AUTO:
+            user["assigned"].pop(rom_id, None)
+        else:
+            user["assigned"][rom_id] = console_id
+    lib.update_user(root, mutate)
     ensure_console(root, console_id, catalog)
-    if console_id == AUTO:
-        forget_container(root, rom.get("path"))
     return {"ok": True, "id": rom_id, "console": console_id,
-            "name": catalog.get(console_id, console_id), "rescan": console_id == AUTO}
+            "name": catalog.get(console_id, console_id), "rescan": False}
 
 
 def ensure_console(root, console_id, catalog):
     """A console the library did not have before now has one, and it needs an
     entry so a core can be assigned to it without waiting for a rescan."""
-    if console_id == lib.UNKNOWN_ID:
+    if console_id in (lib.UNKNOWN_ID, AUTO):
         return
 
     def mutate(document):
@@ -119,6 +101,7 @@ def ensure_console(root, console_id, catalog):
             consoles = {}
         entry = consoles.setdefault(console_id, {"id": console_id})
         entry.setdefault("core", "")
+        entry["present"] = True
         entry["name"] = catalog.get(console_id, entry.get("name") or console_id)
         document["consoles"] = consoles
     lib.update_json(lib.consoles_json(root), mutate,
@@ -132,31 +115,25 @@ def assign_container(root, container, console_id):
     have to identify one at a time, but assigning a whole archive by accident
     is worse, so this is only ever offered for one container at a time and the
     reply says exactly how many roms it touched."""
-    consoles = lib.read_json(lib.consoles_json(root), {}) or {}
-    catalog = consoles.get("catalog") or {}
-    if console_id not in (lib.UNKNOWN_ID, AUTO) and console_id not in catalog:
-        raise KeyError(console_id)
+    catalog = check_console(root, console_id)
+    inside = [rom for rom in load_roms(root).get("roms") or []
+              if rom.get("path") == container and not rom.get("hidden")]
     state = {"touched": 0, "left": 0}
 
-    def mutate(document):
-        for rom in document.get("roms") or []:
-            if rom.get("path") != container:
-                continue
+    def mutate(user):
+        assigned = user["assigned"]
+        for rom in inside:
             if console_id == AUTO:
-                rom["console"] = ""
-                rom["reason"] = "auto"
-                state["touched"] += 1
+                if assigned.pop(rom["id"], None) is not None:
+                    state["touched"] += 1
                 continue
-            if rom.get("console") != lib.UNKNOWN_ID:
+            if lib.effective_console(rom, user)[0] != lib.UNKNOWN_ID:
                 state["left"] += 1
                 continue
-            rom["console"] = console_id
-            rom["reason"] = "unknown" if console_id == lib.UNKNOWN_ID else "assigned"
+            assigned[rom["id"]] = console_id
             state["touched"] += 1
-    lib.update_json(lib.roms_json(root), mutate, default=lambda: {"roms": []})
+    lib.update_user(root, mutate)
     ensure_console(root, console_id, catalog)
-    if console_id == AUTO:
-        forget_container(root, container)
     return {"ok": True, "container": container, "console": console_id,
             "name": catalog.get(console_id, console_id),
             "assigned": state["touched"], "skipped": state["left"]}

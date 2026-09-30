@@ -32,9 +32,18 @@ Item {
     readonly property var sources: root.unidentified ? root.store.unknownGroups() : []
 
     function clearSearch() {
+        queryTimer.stop()
         root.query = ""
         if (searchField)
             searchField.text = ""
+    }
+
+    // A search re-filters thousands of rows, so it waits for a pause in the
+    // typing instead of running once per key.
+    Timer {
+        id: queryTimer
+        interval: 120
+        onTriggered: root.query = searchField.text
     }
 
     function focusSearch() {
@@ -64,7 +73,7 @@ Item {
                     : "Search this console"
                 font.pixelSize: Style.font.bodySmall
                 verticalPadding: Style.spacing.xs
-                onTextChanged: root.query = text
+                onTextChanged: queryTimer.restart()
                 Keys.onEscapePressed: function(event) {
                     root.closeRequested()
                     event.accepted = true
@@ -149,13 +158,7 @@ Item {
                                 showLabel: false
                                 placeholderText: "Assign all " + modelData.count + " to…"
                                 value: ""
-                                options: {
-                                    const options = []
-                                    for (const key in root.store.catalog)
-                                        options.push({ value: key, label: root.store.catalog[key] })
-                                    options.sort((a, b) => a.label.localeCompare(b.label))
-                                    return options
-                                }
+                                options: root.store.catalogOptions
                                 onChanged: next => {
                                     // The absolute path, which is what the
                                     // state script matches rom records on.
@@ -278,13 +281,7 @@ Item {
                         showLabel: false
                         placeholderText: "Which console?"
                         value: ""
-                        options: {
-                            const options = []
-                            for (const key in root.store.catalog)
-                                options.push({ value: key, label: root.store.catalog[key] })
-                            options.sort((a, b) => a.label.localeCompare(b.label))
-                            return options
-                        }
+                        options: root.store.catalogOptions
                         onChanged: next => {
                             root.store.assignConsole(row.modelData.id, next)
                             consolePicker.value = ""
