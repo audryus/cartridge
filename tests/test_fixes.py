@@ -251,6 +251,31 @@ class StagingTest(Fixture):
                 cartridge_play.stage(rom)
         self.assertEqual(os.listdir(folder), [])              # marker gone too
 
+    def test_a_rom_over_the_cap_is_refused_before_anything_is_evicted(self):
+        other, _ = self.stage("Two")
+        with mock.patch.dict(os.environ, {"CARTRIDGE_STAGING_MAX": "1024"}):
+            with self.assertRaises(ValueError) as caught:
+                self.stage("One")                            # 4096 bytes > 1024
+        self.assertIn("staging cap", str(caught.exception))
+        self.assertTrue(os.path.exists(other))
+
+    def test_a_nonsense_cap_falls_back_to_the_default(self):
+        for value in ("0", "-5", "lots"):
+            with mock.patch.dict(os.environ, {"CARTRIDGE_STAGING_MAX": value}):
+                self.assertEqual(cartridge_play.staging_cap(), cartridge_play.DEFAULT_STAGING_CAP)
+
+    def test_a_change_inside_the_same_second_is_staged_again(self):
+        path = os.path.join(self.library, "snes.zip")
+        self.stage("One")
+        before = os.stat(path).st_mtime_ns
+        write_zip(path, {"One.smc": b"9" * 4096, "Two.smc": b"2" * 4096,
+                         "Three.smc": b"3" * 4096})           # same size, new bytes
+        os.utime(path, ns=(before + 1, before + 1))            # 1 ns later
+        again, staged = self.stage("One")
+        self.assertTrue(staged)
+        with open(again, "rb") as handle:
+            self.assertEqual(handle.read(1), b"9")
+
     def test_refuses_a_staging_dir_owned_by_someone_else(self):
         base = os.path.join(self.cache, "staging")
         os.makedirs(os.path.dirname(base), exist_ok=True)
@@ -277,6 +302,35 @@ class DuplicatesTest(Fixture):
         second = self.scan()
         self.assertEqual([rom["depth"] for rom in visible(second)], [1])
         self.assertEqual(second["roms"][0]["name"], "1080")
+
+    def test_different_loose_files_of_the_same_size_are_both_kept(self):
+        # Review #3: loose files carry no CRC, so equal size was taken as
+        # equal bytes and one of two different games disappeared.
+        self.loose("a/Game.smc", b"A" * 64)
+        self.loose("b/Game.smc", b"B" * 64)
+        self.assertEqual(len(visible(self.scan())), 2)
+
+    def test_identical_loose_files_are_still_one_game(self):
+        self.loose("a/Game.smc", b"A" * 64)
+        self.loose("b/Game.smc", b"A" * 64)
+        self.assertEqual(len(visible(self.scan())), 1)
+
+    def test_loose_file_is_compared_with_a_zip_member_by_crc(self):
+        self.loose("Game.smc", b"A" * 64)
+        write_zip(os.path.join(self.library, "set.zip"), {"Game.smc": b"B" * 64})
+        self.assertEqual(len(visible(self.scan())), 2)          # a conflict, not a duplicate
+        shutil.rmtree(self.library)
+        os.makedirs(self.library)
+        self.loose("Game.smc", b"A" * 64)
+        write_zip(os.path.join(self.library, "set.zip"), {"Game.smc": b"A" * 64})
+        self.assertEqual(len(visible(self.scan())), 1)
+
+    def test_a_loose_crc_is_not_worked_out_again_for_an_unchanged_folder(self):
+        self.loose("a/Game.smc", b"A" * 64)
+        self.loose("b/Game.smc", b"A" * 64)
+        self.scan()
+        with mock.patch.object(lib, "crc_of_files", side_effect=AssertionError("rehashed")):
+            self.scan()
 
     def test_favorite_of_a_hidden_copy_moves_to_the_shown_one(self):
         payload = b"s" * 64

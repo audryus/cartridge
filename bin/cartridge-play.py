@@ -42,10 +42,14 @@ def emit(payload):
 
 
 def staging_cap():
+    """CARTRIDGE_STAGING_MAX in bytes. Anything that is not a positive number
+    -- where 0 would mean "delete everything, then stage anyway" -- falls back
+    to the default."""
     try:
-        return int(os.environ.get("CARTRIDGE_STAGING_MAX") or DEFAULT_STAGING_CAP)
+        cap = int(os.environ.get("CARTRIDGE_STAGING_MAX") or DEFAULT_STAGING_CAP)
     except ValueError:
         return DEFAULT_STAGING_CAP
+    return cap if cap > 0 else DEFAULT_STAGING_CAP
 
 
 def staging_dir(rom_id):
@@ -62,7 +66,9 @@ def source_signature(rom):
     it. If this has not moved, the staged copy is still correct."""
     try:
         info = os.stat(rom["path"])
-        return [int(info.st_size), int(info.st_mtime)]
+        # Nanoseconds, like the scanner: a change inside the same second
+        # must not leave the old staged copy in use.
+        return [int(info.st_size), int(info.st_mtime_ns)]
     except OSError:
         return None
 
@@ -89,7 +95,13 @@ def last_used(path):
 def make_room(keep, needed):
     """Delete the least recently played staged roms until `needed` more bytes
     fit under the staging cap. `keep` (the rom being staged) is never
-    touched. Returns the ids removed."""
+    touched. Refuses -- before deleting anything -- a rom that could never fit,
+    and refuses if eviction still leaves too little room. Returns the ids
+    removed."""
+    cap = staging_cap()
+    if needed > cap:
+        raise ValueError("needs %d MB, over the %d MB staging cap (CARTRIDGE_STAGING_MAX)"
+                         % (needed >> 20, cap >> 20))
     base = lib.extract_root()
     try:
         names = os.listdir(base)
@@ -106,13 +118,15 @@ def make_room(keep, needed):
         others.append((last_used(path), name, path, size))
     removed = []
     others.sort()
-    cap = staging_cap()
     for _, name, path, size in others:
         if total + needed <= cap:
             break
         shutil.rmtree(path, ignore_errors=True)
         total -= size
         removed.append(name)
+    if total + needed > cap:
+        raise ValueError("staging is full: %d MB used of a %d MB cap"
+                         % (total >> 20, cap >> 20))
     return removed
 
 
