@@ -300,6 +300,13 @@ class ConsoleMapTest(unittest.TestCase):
         for ext, console in expected.items():
             self.assertEqual(self.map.get(ext), [console], ext)
 
+    def test_a_multi_system_core_runs_each_of_its_consoles(self):
+        mgba = self.cores.get("mgba")
+        if not mgba:
+            self.skipTest("no mGBA core info")
+        self.assertEqual(mgba["systemId"], "game-boy-game-boy-color")
+        self.assertIn("game-boy-advance", mgba["systemIds"])
+
     def test_every_native_console_is_in_the_catalog(self):
         systems = {core["systemId"] for core in self.cores.values()}
         for ext, system in lib.NATIVE_EXTS.items():

@@ -224,6 +224,20 @@ test("the dropdown offers only the cores that can run that console", () => {
     assert.strictEqual(M.coreLabel(cores, "paralleln64"), "ParaLLEl N64");
 });
 
+test("a multi-system core is offered for every console it runs", () => {
+    const cores = [
+        { id: "mgba", label: "mGBA", systemId: "game-boy-game-boy-color",
+          systemIds: ["game-boy-game-boy-color", "game-boy-advance"] },
+        { id: "gpsp", label: "gpSP", systemId: "game-boy-advance",
+          systemIds: ["game-boy-advance"] },
+        { id: "gambatte", label: "Gambatte", systemId: "game-boy-game-boy-color" }
+    ];
+    assert.deepStrictEqual(Array.from(M.coreOptions(cores, "game-boy-advance"), o => o.value),
+                           ["gpsp", "mgba"]);
+    assert.deepStrictEqual(Array.from(M.coreOptions(cores, "game-boy-game-boy-color"), o => o.value),
+                           ["gambatte", "mgba"]);
+});
+
 // -------------------------------------------------------------- formatting
 
 test("sizes read the way a person would say them", () => {

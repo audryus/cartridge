@@ -18,6 +18,9 @@ Item {
     // it. The search field holds the focus as soon as the window opens, so a
     // handler anywhere else would never see the key.
     signal closeRequested()
+    // A rom whose console has no usable core opens the config instead of
+    // doing nothing when clicked.
+    signal configRequested()
 
     property string query: ""
 
@@ -210,7 +213,16 @@ Item {
 
                 HoverHandler {
                     id: rowHover
-                    cursorShape: Qt.PointingHandCursor
+                    cursorShape: actionRow.unidentified ? Qt.ArrowCursor : Qt.PointingHandCursor
+                }
+
+                // The whole row plays the game, so a long name never leaves
+                // the play button as the only, tiny target. It sits under the
+                // star and the action, whose MouseAreas take their own clicks.
+                MouseArea {
+                    anchors.fill: parent
+                    enabled: !actionRow.unidentified
+                    onClicked: root.activate(row.modelData)
                 }
 
                 // --- favorite
@@ -230,8 +242,13 @@ Item {
                         font.pixelSize: Style.font.body
                     }
 
-                    TapHandler {
-                        onTapped: root.store.toggleFavorite(row.modelData.id)
+                    // A MouseArea, not a TapHandler: it takes the click, so
+                    // starring a game does not also launch it.
+                    MouseArea {
+                        anchors.fill: parent
+                        anchors.margins: -Style.spacing.xs
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: root.store.toggleFavorite(row.modelData.id)
                     }
                 }
 
@@ -270,8 +287,7 @@ Item {
                     anchors.rightMargin: Style.spacing.sm
                     anchors.verticalCenter: parent.verticalCenter
                     readonly property bool unidentified: row.modelData.console === "unknown"
-                    width: unidentified ? Style.space(140)
-                                        : (row.modelData.playable ? Style.spacing.controlHeight : 0)
+                    width: unidentified ? Style.space(140) : Style.spacing.controlHeight
                     height: Style.spacing.controlHeight
 
                     // An unidentified rom cannot be played until it is identified.
@@ -292,17 +308,17 @@ Item {
                     Button {
                         anchors.fill: parent
                         visible: !actionRow.unidentified
-                        enabled: row.modelData.playable
+                        // Dimmed, not disabled: a disabled button swallows
+                        // the click and looks just like an enabled one.
+                        foreground: row.modelData.playable ? Color.foreground
+                                                           : Util.alpha(Color.foreground, 0.35)
                         text: ""
                         iconText: "\uF04B"                 // nf-fa-play-circle
                         iconSize: Style.font.body
                         tooltipText: row.modelData.playable
                             ? "Play in RetroArch"
                             : root.store.playableReason(row.modelData.console)
-                        onClicked: {
-                            root.store.play(row.modelData.id)
-                            root.played()
-                        }
+                        onClicked: root.activate(row.modelData)
                     }
                 }
             }
@@ -320,6 +336,17 @@ Item {
             wrapMode: Text.WordWrap
             horizontalAlignment: Text.AlignHCenter
             verticalAlignment: Text.AlignVCenter
+        }
+    }
+
+    function activate(rom) {
+        if (rom.console === "unknown")
+            return
+        if (rom.playable) {
+            root.store.play(rom.id)
+            root.played()
+        } else {
+            root.configRequested()
         }
     }
 

@@ -283,6 +283,16 @@ ALIASES = {
 }
 
 
+# A core whose database entry names several machines runs all of them, but
+# ALIASES files it under one. These are the others it is offered for in the
+# config popup, so mGBA can be the Game Boy Advance core too.
+ALSO_RUNS = {
+    "Game Boy/Game Boy Color/Game Boy Advance": ["Game Boy Advance"],
+    "Super Nintendo Entertainment System / Game Boy / Game Boy Color":
+        ["Game Boy / Game Boy Color"],
+}
+
+
 def canonical_system(systemname):
     name = (systemname or "").strip()
     return ALIASES.get(name, name)
@@ -456,7 +466,8 @@ def load_core_info():
             fields = parse_info(os.path.join(CORE_INFO_DIR, entry))
         except OSError:
             continue
-        systemname = canonical_system(fields.get("systemname"))
+        raw_system = (fields.get("systemname") or "").strip()
+        systemname = canonical_system(raw_system)
         if not systemname:
             continue
         corename = fields.get("corename") or entry[:-5]
@@ -471,6 +482,7 @@ def load_core_info():
             "corename": corename,
             "system": systemname,
             "systemId": slug(systemname),
+            "systemIds": [slug(systemname)] + [slug(other) for other in ALSO_RUNS.get(raw_system, [])],
             "exts": exts,
             "catchAll": len(exts) > 24,
         }

@@ -246,11 +246,18 @@ function unknownGroups(roms, index) {
 }
 
 // Cores that can run a console: the ones whose database entry is for that
-// system, and that are actually installed.
+// system, and that are actually installed. `systemIds` holds every console a
+// multi-system core runs (mGBA: Game Boy and Game Boy Advance); a cores.json
+// from an older scan has only `systemId`.
+function runsConsole(core, consoleId) {
+    if (core.systemIds && core.systemIds.indexOf(consoleId) >= 0) return true;
+    return core.systemId === consoleId;
+}
+
 function coreOptions(cores, consoleId) {
     var options = [];
     for (var i = 0; i < cores.length; i++) {
-        if (cores[i].systemId === consoleId)
+        if (runsConsole(cores[i], consoleId))
             options.push({ value: cores[i].id, label: cores[i].label });
     }
     options.sort(function (a, b) {

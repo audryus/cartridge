@@ -107,6 +107,7 @@ Item {
                 store: root.store
                 consoleId: root.selected
                 onCloseRequested: root.closeRequested()
+                onConfigRequested: root.configRequested()
             }
         }
     }

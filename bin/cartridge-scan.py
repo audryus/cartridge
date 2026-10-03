@@ -382,6 +382,7 @@ def write_cores(path, cores, installed):
             "label": info["corename"] if info else core_id,
             "name": info["name"] if info else core_id,
             "systemId": info["systemId"] if info else "",
+            "systemIds": info["systemIds"] if info else [],
             "system": info["system"] if info else "",
             "exts": info["exts"] if info else [],
             "path": so_path,
