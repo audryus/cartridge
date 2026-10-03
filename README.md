@@ -51,6 +51,10 @@ Some care is needed, because that field is not clean:
 - Cores that list hundreds of extensions (ScummVM, MAME, FBNeo, Dolphin, PPSSPP)
   are treated as catch-alls and left out of the table, or they would claim half
   the alphabet and make everything ambiguous.
+- A console's own cartridge formats (`.gb`, `.gbc`, `.gba`, `.sfc`/`.smc`,
+  `.z64`/`.v64`, `.sms`, `.gg`, `.lnx` and others, in `NATIVE_EXTS`) go to that
+  console even when another core also lists them: bsnes plays `.gb` through
+  the Super Game Boy, and mGBA is filed under Game Boy but reads `.gba`.
 - An extension exactly one console claims is that console. An extension several
   claim — `.bin` on its own, Genesis or PlayStation — goes to **Unidentified**,
   because cartridge will not guess.

@@ -227,6 +227,22 @@ class ScannerTest(unittest.TestCase):
         # The second pass reuses everything, and says so.
         self.assertEqual(len(second["containers"]), 1)
 
+    def test_an_unchanged_container_is_classified_again(self):
+        # A zip scanned when .gba was ambiguous must not stay Unidentified
+        # once the table knows better, just because the zip did not change.
+        write_zip(os.path.join(self.library, "set.zip"), {"Game.gba": b"x" * 16})
+        self.scan()
+        path = lib.roms_json()
+        document = lib.read_json(path, {})
+        document["roms"][0]["console"] = lib.UNKNOWN_ID
+        document["roms"][0]["reason"] = "ambiguous"
+        lib.write_json(path, document)
+        again = self.scan()
+        # Reused, not read again: the fingerprint is the one already stored.
+        self.assertEqual(again["containers"], document["containers"])
+        self.assertEqual(again["roms"][0]["console"], "game-boy-advance")
+        self.assertEqual(again["roms"][0]["reason"], "auto")
+
 
 class ConsoleMapTest(unittest.TestCase):
     """The extension table comes from libretro-core-info, so these assertions
@@ -267,12 +283,27 @@ class ConsoleMapTest(unittest.TestCase):
         self.assertEqual(self.map.get("gcm"), ["gamecube-wii"])
         self.assertEqual(self.map.get("nes"), ["nintendo-entertainment-system"])
 
-    def test_a_broken_database_claim_makes_an_extension_ambiguous(self):
-        # Several Game Boy emulators list "gba" in their supported extensions,
-        # so cartridge cannot call a .gba file a Game Boy Advance game without
-        # guessing. This records the consequence rather than hiding it: those
-        # roms land in Unidentified for the user to place.
-        self.assertIn("game-boy-game-boy-color", self.map.get("gba", []))
+    def test_native_formats_beat_secondary_claims(self):
+        # bsnes plays .gb through the Super Game Boy, mGBA is filed under Game
+        # Boy but lists .gba, Genesis Plus GX plays .sms. Each of these is
+        # still one console's own cartridge format.
+        expected = {
+            "gb": "game-boy-game-boy-color",
+            "gbc": "game-boy-game-boy-color",
+            "gba": "game-boy-advance",
+            "sms": "sega-master-system-8-bit",
+            "gg": "sega-master-system-8-bit",
+            "lnx": "lynx",
+            "sfc": "super-nintendo-entertainment-system",
+            "z64": "nintendo-64",
+        }
+        for ext, console in expected.items():
+            self.assertEqual(self.map.get(ext), [console], ext)
+
+    def test_every_native_console_is_in_the_catalog(self):
+        systems = {core["systemId"] for core in self.cores.values()}
+        for ext, system in lib.NATIVE_EXTS.items():
+            self.assertIn(lib.slug(system), systems, ext)
 
     def test_catch_all_cores_do_not_claim_the_alphabet(self):
         for ext in ("bin", "iso", "chd", "cue"):

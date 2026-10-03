@@ -60,6 +60,8 @@ class Detector:
         self.catalog = {}
         for core in self.cores.values():
             self.catalog.setdefault(core["systemId"], core["system"])
+        for system in lib.NATIVE_EXTS.values():
+            self.catalog.setdefault(lib.slug(system), system)
 
     def console_for(self, ext):
         ids = self.ext_map.get(ext)
@@ -71,6 +73,18 @@ class Detector:
 
 
 # --------------------------------------------------------------- rom records
+
+def redetect(detector, roms):
+    """Records reused from the last scan, classified again. Reading a
+    container is what is expensive; the console is only its extension looked
+    up, and the table may have changed since -- a newer cartridge, a core-info
+    update -- so an untouched zip must not keep a stale answer."""
+    for rom in roms:
+        if rom.get("kind") == "cue" or rom.get("reason") == "assigned":
+            continue
+        rom["console"], rom["reason"] = detector.console_for(rom.get("ext") or "")
+    return roms
+
 
 def make_rom(detector, name, container, entry, parent, depth, kind, extras, size=0, crc=""):
     member = entry["name"] if isinstance(entry, dict) else entry
@@ -513,7 +527,7 @@ def main():
         mark = folder_fingerprint(dirpath, names)
         containers[dirpath] = mark
         if mark and known_containers.get(dirpath) == mark:
-            roms.extend(by_container.get(dirpath, []))
+            roms.extend(redetect(detector, by_container.get(dirpath, [])))
             reused += 1
         else:
             stale_folders.append((dirpath, names))
@@ -522,7 +536,7 @@ def main():
         mark = fingerprint(archive)
         containers[archive] = mark
         if mark and known_containers.get(archive) == mark:
-            roms.extend(by_container.get(archive, []))
+            roms.extend(redetect(detector, by_container.get(archive, [])))
             reused += 1
         else:
             stale_archives.append(archive)

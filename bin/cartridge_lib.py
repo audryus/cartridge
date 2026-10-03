@@ -335,6 +335,48 @@ IGNORED_EXTS = {
 }
 
 
+# Cartridge formats that belong to one console, whatever else the database
+# says. Other cores list them because they *can* run them -- bsnes and Mesen-S
+# play .gb through the Super Game Boy, mGBA and VBA-M are filed under Game Boy
+# but list .gba, NooDS runs .gba in the DS slot, Genesis Plus GX plays Master
+# System and Game Gear, Frodo reads a C64 tape format that happens to be .lnx.
+# None of that makes a .gba file anything but a Game Boy Advance game.
+NATIVE_EXTS = {
+    "gb": "Game Boy / Game Boy Color",
+    "gbc": "Game Boy / Game Boy Color",
+    "sgb": "Game Boy / Game Boy Color",
+    "gba": "Game Boy Advance",
+    "agb": "Game Boy Advance",
+    "nes": "Nintendo Entertainment System",
+    "fds": "Nintendo Entertainment System",
+    "sfc": "Super Nintendo Entertainment System",
+    "smc": "Super Nintendo Entertainment System",
+    "swc": "Super Nintendo Entertainment System",
+    "fig": "Super Nintendo Entertainment System",
+    "n64": "Nintendo 64",
+    "z64": "Nintendo 64",
+    "v64": "Nintendo 64",
+    "nds": "Nintendo DS",
+    "vb": "Virtual Boy",
+    "sms": "Sega Master System / 8-bit",
+    "gg": "Sega Master System / 8-bit",
+    "md": "Sega Genesis / Mega Drive",
+    "gen": "Sega Genesis / Mega Drive",
+    "smd": "Sega Genesis / Mega Drive",
+    "32x": "Sega Genesis / Mega Drive",
+    "pce": "PC Engine / TurboGrafx-16",
+    "sgx": "PC Engine / TurboGrafx-16",
+    "lnx": "Lynx",
+    "a26": "Atari 2600",
+    "a78": "Atari 7800",
+    "j64": "Jaguar",
+    "ws": "WonderSwan/Color",
+    "wsc": "WonderSwan/Color",
+    "ngp": "Neo Geo Pocket (Color)",
+    "ngc": "Neo Geo Pocket (Color)",
+}
+
+
 def ext_of(name):
     base = os.path.basename(name or "")
     if "." not in base:
@@ -442,7 +484,8 @@ def build_extension_map(cores):
 
     Cores that list an implausibly long extension list (ScummVM, MAME, FBNeo,
     Dolphin, PPSSPP, PCSX2, Flycast) are excluded: they claim whole swaths of
-    the alphabet and would make everything ambiguous.
+    the alphabet and would make everything ambiguous. A NATIVE_EXTS format
+    goes to its own console alone.
     """
     ext_map = {}
     seen = set()
@@ -456,6 +499,8 @@ def build_extension_map(cores):
             bucket = ext_map.setdefault(ext, [])
             if core["systemId"] not in bucket:
                 bucket.append(core["systemId"])
+    for ext, system in NATIVE_EXTS.items():
+        ext_map[ext] = [slug(system)]
     return ext_map
 
 
