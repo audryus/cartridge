@@ -112,6 +112,12 @@ Mupen64Plus-Next and ParaLLEl N64; PlayStation offers Beetle PSX and Beetle PSX
 HW. A console with roms but no installed core says so instead of offering an
 empty list.
 
+The list of installed cores is taken at scan time. A core installed or removed
+since then shows up with the ↻ button in the config window's header, which reads
+`/usr/lib/libretro` again and rewrites `cores.json` alone, in a second, without
+the full library scan Refresh does (`./bin/cartridge-state.py cores` from the
+command line).
+
 Cores are matched to their metadata by `corename` **and** by file name, because
 Arch still installs some cores under their old names — `mednafen_psx_libretro.so`
 next to a `mednafen_psx_libretro.info` that calls itself `Beetle PSX HW`. Without
@@ -131,7 +137,7 @@ ui/ConfigPopup.qml     the core-per-console window
 ui/CartridgeData.qml   state, processes, the four JSON files
 ui/CartridgeModel.js   sorting, search, conflicts — pure, and tested
 bin/cartridge-scan.py    find the games, write the state
-bin/cartridge-state.py   favorite, identify, pick a core
+bin/cartridge-state.py   favorite, identify, pick a core, re-read the cores
 bin/cartridge-play.py    stage the game, start RetroArch
 bin/cartridge_lib.py     extension table, archive reading, JSON state
 state/                   roms.json, user.json, consoles.json, cores.json, .lock (gitignored)

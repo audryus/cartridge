@@ -368,6 +368,34 @@ QtObject {
         scanProc.running = true
     }
 
+    // Only cores.json, not the library: a core installed or removed since the
+    // last scan, picked up without reading every archive again.
+    //
+    // coresReport is the answer, for the config window, which does not show
+    // the toolbar's status line.
+    property bool rescanningCores: false
+    property string coresReport: ""
+
+    function rescanCores() {
+        if (scanning || rescanningCores || !active)
+            return
+        rescanningCores = true
+        coresReport = "looking for installed cores…"
+        run([binDir + "/cartridge-state.py", "cores"], result => {
+            rescanningCores = false
+            if (!result || result.ok === false) {
+                coresReport = result ? result.error : "cartridge-state.py said nothing"
+                return
+            }
+            coresView.reload()
+            const bits = [result.cores + " cores installed"]
+            if (result.added.length) bits.push("new: " + result.added.join(", "))
+            if (result.removed.length) bits.push("gone: " + result.removed.join(", "))
+            if (!result.added.length && !result.removed.length) bits.push("nothing changed")
+            coresReport = bits.join(" · ")
+        })
+    }
+
     function toggleFavorite(id) {
         const rom = findRom(id)
         if (!rom)

@@ -367,30 +367,6 @@ def write_consoles(path, detector, detected, ext_map, roms_stamp):
     lib.update_json(path, mutate, default=lambda: {"consoles": {}, "catalog": {}})
 
 
-def write_cores(path, cores, installed):
-    """Only cores the user actually has, so the config popup never offers
-    something that is not on disk.
-
-    `label` is what the dropdown shows: the corename from the database, which
-    is how cores are known by name ("Mupen64Plus-Next"), falling back to the
-    file name for a core with no usable metadata."""
-    entries = []
-    for core_id, so_path in sorted(installed.items()):
-        info = cores.get(core_id)
-        entries.append({
-            "id": core_id,
-            "label": info["corename"] if info else core_id,
-            "name": info["name"] if info else core_id,
-            "systemId": info["systemId"] if info else "",
-            "systemIds": info["systemIds"] if info else [],
-            "system": info["system"] if info else "",
-            "exts": info["exts"] if info else [],
-            "path": so_path,
-        })
-    entries.sort(key=lambda item: (item["system"], item["label"].lower()))
-    lib.write_json(path, {"generated": lib.now(), "cores": entries})
-
-
 # ---------------------------------------------------------------------- main
 
 def same_content(a, b):
@@ -610,7 +586,7 @@ def main():
             "roms": roms,
         })
         write_consoles(lib.consoles_json(root), detector, detected, detector.ext_map, stamp)
-        write_cores(lib.cores_json(root), detector.cores, installed)
+        lib.write_cores(lib.cores_json(root), detector.cores, installed)
 
     log("cartridge: %d roms, %d consoles, %d duplicates hidden, +%d -%d"
         % (summary["total"], summary["consoles"], len(hidden),

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Change cartridge state: favorite a rom, tell cartridge what an unknown rom
-is, pick the core for a console.
+is, pick the core for a console, or look again at the installed cores.
 
 What the user decides goes to user.json, which the scanner only reads, and
 every write happens under the state lock -- so a change made here survives the
@@ -10,6 +10,7 @@ next scan, even one already running, and a scan never drops it.
   cartridge-state assign   <romId> <consoleId|auto>
   cartridge-state container <path> <consoleId|auto>
   cartridge-state core     <consoleId> <coreId|->
+  cartridge-state cores
 
 "auto" forgets what cartridge was told and goes back to detection, which is the
 way out of an answer you gave to the wrong file. Detection's answer is already
@@ -167,6 +168,24 @@ def set_core(root, console_id, core_id):
             "core": "" if core_id == "-" else core_id}
 
 
+def rescan_cores(root):
+    """cores.json again, without reading the library: a core installed or
+    removed since the last scan shows up in the config window in a second
+    instead of after a full Refresh.
+
+    Only cores.json is written. A console whose chosen core is gone keeps the
+    choice, the same as after a scan; cartridge-play is what reports it."""
+    with lib.state_lock(root):
+        before = lib.read_json(lib.cores_json(root), {}) or {}
+        entries = lib.write_cores(lib.cores_json(root), lib.load_core_info(),
+                                  lib.installed_cores())
+    old = {core.get("id"): core.get("label") for core in before.get("cores") or []}
+    new = {core["id"]: core["label"] for core in entries}
+    return {"ok": True, "cores": len(entries),
+            "added": sorted(new[i] for i in set(new) - set(old)),
+            "removed": sorted(old[i] or i for i in set(old) - set(new))}
+
+
 def main():
     if len(sys.argv) < 2:
         lib.fail(__doc__.strip(), 64)
@@ -182,6 +201,8 @@ def main():
             result = assign_container(root, sys.argv[2], sys.argv[3])
         elif command == "core" and len(sys.argv) == 4:
             result = set_core(root, sys.argv[2], sys.argv[3])
+        elif command == "cores" and len(sys.argv) == 2:
+            result = rescan_cores(root)
         else:
             lib.fail(__doc__.strip(), 64)
     except KeyError as missing:

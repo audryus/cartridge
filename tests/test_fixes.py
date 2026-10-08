@@ -437,6 +437,24 @@ class CoreChoiceTest(Fixture):
         entry = lib.read_json(lib.consoles_json())["consoles"][SNES]
         self.assertEqual((entry["core"], entry["present"]), (snes_core, True))
 
+    def test_a_core_installed_after_the_scan_shows_without_a_rescan(self):
+        self.loose("Game.smc", b"s" * 16)
+        self.scan()
+        roms_before = os.stat(lib.roms_json()).st_mtime_ns
+        real = lib.installed_cores()
+        extra = dict(real, newcore="/usr/lib/libretro/newcore_libretro.so")
+
+        with mock.patch.object(lib, "installed_cores", return_value=extra):
+            result = cartridge_state.rescan_cores(ROOT)
+        self.assertEqual((result["added"], result["removed"]), (["newcore"], []))
+        ids = {core["id"] for core in lib.read_json(lib.cores_json())["cores"]}
+        self.assertIn("newcore", ids)
+        self.assertEqual(os.stat(lib.roms_json()).st_mtime_ns, roms_before)
+
+        with mock.patch.object(lib, "installed_cores", return_value=real):
+            result = cartridge_state.rescan_cores(ROOT)
+        self.assertEqual((result["added"], result["removed"]), ([], ["newcore"]))
+
     def test_a_console_without_a_core_is_still_dropped(self):
         rom = self.loose("Game.smc", b"s" * 16)
         self.scan()

@@ -57,7 +57,7 @@ Item {
 
         Text {
             anchors.centerIn: parent
-            width: parent.width - back.width - closeButton.width - Style.spacing.xl
+            width: parent.width - 2 * (closeButton.width + rescan.width) - Style.spacing.xl
             text: "Core per console"
             color: Color.foreground
             font.family: Style.font.family
@@ -65,6 +65,24 @@ Item {
             font.weight: Font.Medium
             horizontalAlignment: Text.AlignHCenter
             elide: Text.ElideRight
+        }
+
+        // Installed a core while cartridge was open: look again at what is on
+        // disk, without the full library scan Refresh does.
+        Button {
+            id: rescan
+            anchors.right: closeButton.left
+            anchors.rightMargin: Style.spacing.xs
+            anchors.verticalCenter: parent.verticalCenter
+            width: root.headerButton
+            height: root.headerButton
+            text: ""
+            iconText: "\uF021"       // nf-fa-repeat
+            iconSize: Style.font.body
+            tooltipText: "Look again for installed cores"
+            iconSpinning: root.store.rescanningCores
+            enabled: !root.store.scanning
+            onClicked: root.store.rescanCores()
         }
 
         Button {
@@ -81,8 +99,26 @@ Item {
         }
     }
 
+    // What the rescan button found. Empty, and so taking no room, until it is
+    // pressed.
     Text {
+        id: report
         anchors.top: header.bottom
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.leftMargin: Style.spacing.md
+        anchors.rightMargin: Style.spacing.md
+        height: text.length > 0 ? implicitHeight + Style.spacing.xs : 0
+        text: root.store.coresReport
+        color: Util.alpha(Color.foreground, 0.62)
+        font.family: Style.font.family
+        font.pixelSize: Style.font.caption
+        horizontalAlignment: Text.AlignRight
+        elide: Text.ElideRight
+    }
+
+    Text {
+        anchors.top: report.bottom
         anchors.topMargin: Style.spacing.xs
         anchors.left: parent.left
         anchors.right: parent.right
@@ -100,7 +136,7 @@ Item {
     // library with thirty consoles must scroll rather than run off the screen.
     ListView {
         id: list
-        anchors.top: header.bottom
+        anchors.top: report.bottom
         anchors.topMargin: Style.spacing.sm
         anchors.left: parent.left
         anchors.right: parent.right
