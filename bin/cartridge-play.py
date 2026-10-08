@@ -20,6 +20,7 @@ import shutil
 import subprocess
 import sys
 import time
+import xml.etree.ElementTree as ElementTree
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -34,6 +35,11 @@ MAX_STAGED_BYTES = 8 << 30
 DEFAULT_STAGING_CAP = 16 << 30
 # Room to leave on the disk after staging.
 FREE_MARGIN = 512 << 20
+
+PLAY_CORE = "play_libretro.so"
+# What a US SCPH-70012 (BIOS 2.20) answers to rom0:ROMVER: version, region
+# (A = America), console, build date.
+PLAY_ROMVER = b"0220AC20060905"
 
 
 def emit(payload):
@@ -236,6 +242,68 @@ def core_for(rom, consoles, cores):
     raise ValueError("core %s is no longer installed" % core_id)
 
 
+# ------------------------------------------------------------- core quirks
+#
+# Play! as Arch ships it does not run as RetroArch starts it here, for two
+# reasons outside cartridge, both found from core dumps:
+#
+# - It loads OpenGL through GLEW built for GLX. Under Wayland RetroArch makes an
+#   EGL context, every GL function pointer stays null, and the first frame
+#   jumps to address 0 (CGSH_OpenGL::SetupFramebuffer). Without WAYLAND_DISPLAY
+#   RetroArch falls back to X11, which here is XWayland, and GLX works.
+# - It maps rom0: to an empty directory. A game that reads rom0:ROMVER -- a
+#   real BIOS always has one -- gets an exception nothing catches, and the
+#   whole process aborts.
+
+
+def play_data_dir():
+    """Where Play! keeps its config.xml and its vfs: $XDG_CONFIG_HOME, the way
+    the core itself works it out."""
+    config = os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config")
+    return os.path.join(config, "Play Data Files")
+
+
+def play_rom0():
+    """The directory Play! serves rom0: from: config.xml says, once Play! has
+    run; before that, its default."""
+    try:
+        tree = ElementTree.parse(os.path.join(play_data_dir(), "config.xml"))
+        for preference in tree.iter("Preference"):
+            if preference.get("Name") == "ps2.rom0.directory.v2" and preference.get("Value"):
+                return preference.get("Value")
+    except (OSError, ElementTree.ParseError):
+        pass
+    return os.path.join(play_data_dir(), "vfs", "rom0")
+
+
+def ensure_play_romver():
+    """rom0/ROMVER, written once and never over one already there: a ROMVER
+    the user put in, from their own console, is the better answer."""
+    path = os.path.join(play_rom0(), "ROMVER")
+    if os.path.exists(path):
+        return False
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "xb") as handle:
+        handle.write(PLAY_ROMVER)
+    return True
+
+
+def launch_env(core):
+    """The environment RetroArch starts in, and whatever a core needs on disk
+    before it starts. Every core but Play! gets the session as it is."""
+    env = dict(os.environ)
+    if os.path.basename(core.get("path") or "") != PLAY_CORE:
+        return env
+    if env.get("DISPLAY"):
+        env.pop("WAYLAND_DISPLAY", None)
+    try:
+        ensure_play_romver()
+    except OSError:
+        # Not a reason to refuse to start: most games never ask for it.
+        pass
+    return env
+
+
 def mark_played(root, rom_id, when):
     """Into user.json: a few bytes, not a rewrite of the library."""
     lib.update_user(root, lambda user: user["lastPlayed"].__setitem__(rom_id, when))
@@ -287,7 +355,7 @@ def main():
             process = subprocess.Popen(
                 [RETROARCH, "-L", core["path"], content],
                 stdin=subprocess.DEVNULL, stdout=sink, stderr=sink,
-                start_new_session=True)
+                env=launch_env(core), start_new_session=True)
     except (OSError, ValueError) as problem:
         emit({"ok": False, "error": "cannot start %s: %s" % (RETROARCH, problem)})
         return 6

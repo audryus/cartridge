@@ -104,6 +104,23 @@ No flags, so fullscreen, shaders and everything else stay whatever
 `~/.config/retroarch/retroarch.cfg` says. RetroArch's log for each launch is at
 `~/.cache/cartridge/logs/`, not next to your roms.
 
+One core gets help. Play! (PlayStation 2), as Arch builds it, crashed on every
+game, for two reasons found in its core dumps:
+
+- It loads OpenGL through GLEW built for GLX, and under Wayland RetroArch makes
+  an EGL context: every GL function stays null and the first frame jumps to
+  address 0. Play! is started without `WAYLAND_DISPLAY`, so RetroArch uses X11
+  through XWayland, where GLX works. Every other core keeps the session as it is.
+- It serves `rom0:` from an empty folder, and a game that reads `rom0:ROMVER`
+  aborts the whole process. Before Play! starts, cartridge writes a `ROMVER`
+  (a US BIOS 2.20's, `0220AC20060905`) into the `rom0` folder named in
+  `~/.config/Play Data Files/config.xml`, once, and never over one already there.
+
+That makes Play! start; it does not make it a good emulator. Shadow of the
+Colossus still dies in Play!'s own file code, and a game can still crash now and
+then. LRPS2 (`libretro-lrps2-git`) runs far more of the library, given a BIOS
+dumped from your own console in `~/Games/bios/pcsx2/bios/`.
+
 ### Cores
 
 The config window lists every console found in the library, and for each one the

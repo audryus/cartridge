@@ -602,6 +602,60 @@ class UserStateTest(Fixture):
         self.assertEqual(consoles["romsStamp"], roms["stamp"])
 
 
+# ------------------------------------------------ Play! needs help to start
+
+class PlayQuirksTest(Fixture):
+    """Play! crashed on every PS2 game: a null GL function under Wayland, and
+    an uncaught exception reading rom0:ROMVER from an empty rom0."""
+
+    PLAY = {"id": "play", "path": "/usr/lib/libretro/play_libretro.so"}
+    OTHER = {"id": "snes9x", "path": "/usr/lib/libretro/snes9x_libretro.so"}
+
+    def setUp(self):
+        super().setUp()
+        self.config = os.path.join(self.dir, "config")
+        self.session = mock.patch.dict(os.environ, {
+            "XDG_CONFIG_HOME": self.config, "WAYLAND_DISPLAY": "wayland-1", "DISPLAY": ":0"})
+        self.session.start()
+
+    def tearDown(self):
+        self.session.stop()
+        super().tearDown()
+
+    def romver(self, *parts):
+        return os.path.join(self.config, "Play Data Files", *parts, "ROMVER")
+
+    def test_play_runs_under_xwayland_and_others_do_not(self):
+        self.assertEqual(cartridge_play.launch_env(self.OTHER)["WAYLAND_DISPLAY"], "wayland-1")
+        self.assertFalse(os.path.exists(self.romver("vfs", "rom0")))
+        self.assertNotIn("WAYLAND_DISPLAY", cartridge_play.launch_env(self.PLAY))
+
+    def test_without_x_wayland_is_left_alone(self):
+        with mock.patch.dict(os.environ):
+            del os.environ["DISPLAY"]
+            self.assertEqual(cartridge_play.launch_env(self.PLAY)["WAYLAND_DISPLAY"], "wayland-1")
+
+    def test_romver_is_written_once_and_never_replaced(self):
+        cartridge_play.launch_env(self.PLAY)
+        path = self.romver("vfs", "rom0")
+        with open(path, "rb") as handle:
+            self.assertEqual(handle.read(), cartridge_play.PLAY_ROMVER)
+        with open(path, "wb") as handle:
+            handle.write(b"0160EC20010704")                  # the user's own
+        cartridge_play.launch_env(self.PLAY)
+        with open(path, "rb") as handle:
+            self.assertEqual(handle.read(), b"0160EC20010704")
+
+    def test_romver_goes_where_play_config_points_rom0(self):
+        elsewhere = os.path.join(self.dir, "my-rom0")
+        os.makedirs(os.path.join(self.config, "Play Data Files"))
+        with open(os.path.join(self.config, "Play Data Files", "config.xml"), "w") as handle:
+            handle.write('<Config><Preference Name="ps2.rom0.directory.v2" Type="path" '
+                         'Value="%s" /></Config>' % elsewhere)
+        cartridge_play.launch_env(self.PLAY)
+        self.assertTrue(os.path.exists(os.path.join(elsewhere, "ROMVER")))
+
+
 # ---------------------------------------------------------------- misc
 
 class MiscTest(Fixture):
