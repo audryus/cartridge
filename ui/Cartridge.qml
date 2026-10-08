@@ -47,10 +47,7 @@ Item {
         function onRevisionChanged() { root.pickFirstConsole() }
     }
 
-    Component.onCompleted: {
-        root.store.ensureLoaded()
-        root.pickFirstConsole()
-    }
+    Component.onCompleted: root.pickFirstConsole()
 
     Column {
         id: column

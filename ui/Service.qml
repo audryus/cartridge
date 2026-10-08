@@ -75,6 +75,7 @@ Item {
             return JSON.stringify({
                 scanning: cartridgeStore.scanning,
                 roms: cartridgeStore.roms.length,
+                loaded: cartridgeStore.loaded,
                 problem: cartridgeStore.problem !== "",
                 shared: true
             })

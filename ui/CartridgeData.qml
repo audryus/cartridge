@@ -88,14 +88,57 @@ QtObject {
 
     // ------------------------------------------------------------------ load
 
-    // Called every time the window opens. cartridge-state.py replaces the
-    // state files with a rename, which a file watcher sitting on the old inode
-    // may not see, so re-reading on open is what makes the window agree with
-    // what is on disk -- including a rescan started elsewhere.
+    // The library lives in memory only while a window shows it. The service
+    // outlives every window -- it is mounted with the shell -- and the parsed
+    // roms, plus the text they were parsed from, are tens of megabytes of heap
+    // that nothing reads while the windows are closed.
+    //
+    // Each open window holds the store (acquire), and closing it lets go
+    // (release). Once nothing has held it for unloadDelay the roms are
+    // dropped; the next open reads roms.json again.
+    property int holds: 0
+    readonly property int unloadDelay: 60000
+
+    function acquire() {
+        holds++
+        unloadTimer.stop()
+        reload()
+    }
+
+    function release() {
+        holds = Math.max(0, holds - 1)
+        if (holds === 0)
+            unloadTimer.restart()
+    }
+
+    property Timer unloadTimer: Timer {
+        id: unloadTimer
+        interval: store.unloadDelay
+        onTriggered: store.unloadRoms()
+    }
+
+    function unloadRoms() {
+        if (holds > 0 || !loaded)
+            return
+        roms = []
+        byId = ({})
+        index = ({ conflicts: {}, counts: {} })
+        loaded = false
+        romsStamp = ""
+        bump()
+        // The roms are garbage now; collect them while nobody is looking
+        // rather than whenever the engine next feels like it.
+        Qt.callLater(gc)
+    }
+
+    // Called every time a window opens. cartridge-state.py replaces the state
+    // files with a rename, which a file watcher sitting on the old inode may
+    // not see, so re-reading on open is what makes the window agree with what
+    // is on disk -- including a rescan started elsewhere.
     //
     // Only the small files are read every time. roms.json is read when
     // consoles.json says a scan has replaced it (applyConsoles), or when it
-    // has never been read.
+    // is not in memory.
     //
     // FileView's watchChanges only emits fileChanged; each view below turns
     // that into a reload, and applies what it read on `loaded`.
@@ -107,7 +150,7 @@ QtObject {
         if (!active)
             return
         if (!loaded)
-            romsView.reload()
+            readRoms()
         userView.reload()
         consolesView.reload()
         coresView.reload()
@@ -116,8 +159,51 @@ QtObject {
     function reloadAll() {
         if (!active)
             return
-        romsView.reload()
+        readRoms()
         reload()
+    }
+
+    // roms.json is read by a FileView made for the one read and destroyed
+    // right after, so the 3.5 MB of text it holds goes with it instead of
+    // sitting next to the parsed roms for as long as the shell runs. Nothing
+    // watches it: every scan rewrites consoles.json too, whose romsStamp says
+    // when the library needs reading again.
+    property var romsReader: null
+    property bool romsAgain: false
+
+    function readRoms() {
+        if (!active || holds === 0)
+            return
+        if (romsReader) {
+            romsAgain = true
+            return
+        }
+        romsReader = romsReaderComponent.createObject(store, { path: romsFile })
+    }
+
+    function romsRead(reader, raw) {
+        reader.destroy()
+        romsReader = null
+        if (romsAgain) {
+            romsAgain = false
+            readRoms()
+            return
+        }
+        // Closed while it was reading: nobody to show it to.
+        if (holds > 0 && raw !== null)
+            applyRoms(raw)
+        else if (raw === null)
+            setProblem("no library scanned yet - press refresh")
+    }
+
+    property Component romsReaderComponent: Component {
+        FileView {
+            id: reader
+            blockLoading: false
+            printErrors: false
+            onLoaded: store.romsRead(reader, reader.text())
+            onLoadFailed: store.romsRead(reader, null)
+        }
     }
 
     // decorate gives every rom what the UI needs that is cheaper to work out
@@ -217,7 +303,7 @@ QtObject {
         consoles = document.consoles || {}
         catalog = document.catalog || {}
         if (loaded && document.romsStamp && document.romsStamp !== romsStamp)
-            romsView.reload()
+            readRoms()
         bump()
     }
 
@@ -242,24 +328,6 @@ QtObject {
 
     // Declared as properties, not as bare children: a QtObject has no default
     // property, so a child object with no home is a load error.
-    property FileView romsView: FileView {
-        id: romsView
-        path: store.active ? store.romsFile : ""
-        blockLoading: false
-        preload: store.active
-        printErrors: false
-        watchChanges: true
-        onFileChanged: reload()
-        onLoaded: romsTimer.restart()
-        onLoadFailed: store.setProblem("no library scanned yet - press refresh")
-    }
-
-    property Timer romsTimer: Timer {
-        id: romsTimer
-        interval: 60
-        onTriggered: store.applyRoms(romsView.text())
-    }
-
     property FileView userView: FileView {
         id: userView
         path: store.active ? store.userFile : ""

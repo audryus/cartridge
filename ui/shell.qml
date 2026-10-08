@@ -59,6 +59,8 @@ BarWidget {
     Component.onDestruction: {
         if (root.registeredWith && typeof root.registeredWith.unregister === "function")
             root.registeredWith.unregister(root)
+        if (root.holding)
+            root.store.release()
     }
 
     function markUsed() {
@@ -69,9 +71,29 @@ BarWidget {
     property bool libraryOpen: false
     property bool configOpen: false
 
+    // The store keeps the library in memory only while some window holds it
+    // (see CartridgeData.acquire). Holding follows whether either window of
+    // this bar is open; `holding` remembers what was taken, so the store a
+    // release goes to is the one that was acquired even if `store` changed.
+    readonly property bool showing: libraryOpen || configOpen
+    property var holding: null
+
+    onShowingChanged: {
+        if (root.showing && !root.holding) {
+            root.holding = root.store
+            root.holding.acquire()
+        } else if (!root.showing && root.holding) {
+            root.holding.release()
+            root.holding = null
+        }
+    }
+
+    // The console the library was showing, kept here because the library's
+    // content is only built while its window is open.
+    property string lastConsole: ""
+
     function open() {
         root.markUsed()
-        root.store.ensureLoaded()
         // A bar widget exists once per monitor. Closing the other instances
         // first is what keeps one click from opening the library twice.
         root.broadcast("closeWindows")
@@ -106,7 +128,6 @@ BarWidget {
 
     function openConfig() {
         root.markUsed()
-        root.store.ensureLoaded()
         root.broadcast("closeWindows")
         libraryOpen = false
         configOpen = true
@@ -225,7 +246,10 @@ BarWidget {
             ? WlrKeyboardFocus.Exclusive : WlrKeyboardFocus.None
         exclusionMode: ExclusionMode.Ignore
 
-        onVisibleChanged: if (visible) Qt.callLater(() => libraryContent.focusSearch())
+        onVisibleChanged: if (visible) Qt.callLater(() => {
+            if (libraryContent.item)
+                libraryContent.item.focusSearch()
+        })
 
         MouseArea {
             anchors.fill: parent
@@ -261,16 +285,26 @@ BarWidget {
                     event.accepted = true
                 }
 
-                Cartridge {
+                // Only built while the window is open, like the config one:
+                // hidden, it would rebuild its rows -- thousands of them --
+                // every time the library changed.
+                Loader {
                     id: libraryContent
                     anchors.fill: parent
                     anchors.topMargin: libraryCard.contentTopInset
                     anchors.rightMargin: libraryCard.contentRightInset
                     anchors.bottomMargin: libraryCard.contentBottomInset
                     anchors.leftMargin: libraryCard.contentLeftInset
-                    store: root.store
-                    onConfigRequested: root.openConfig()
-                    onCloseRequested: root.close()
+                    active: root.libraryOpen
+                    sourceComponent: Component {
+                        Cartridge {
+                            store: root.store
+                            selected: root.lastConsole
+                            onSelectedChanged: root.lastConsole = selected
+                            onConfigRequested: root.openConfig()
+                            onCloseRequested: root.close()
+                        }
+                    }
                 }
             }
         }
