@@ -455,12 +455,66 @@ class CoreChoiceTest(Fixture):
             result = cartridge_state.rescan_cores(ROOT)
         self.assertEqual((result["added"], result["removed"]), ([], ["newcore"]))
 
+    def snes_core(self):
+        return lib.read_json(lib.consoles_json())["consoles"][SNES]["core"]
+
+    def scan_with(self, *core_ids):
+        installed = {core_id: "/usr/lib/libretro/%s_libretro.so" % core_id
+                     for core_id in core_ids}
+        with mock.patch.object(lib, "installed_cores", return_value=installed):
+            self.scan()
+
+    def require_snes_info(self):
+        info = lib.load_core_info()
+        for core_id in ("bsnes", "snes9x"):
+            if (info.get(core_id) or {}).get("systemId") != SNES:
+                self.skipTest("no core-info for %s" % core_id)
+
+    def test_a_new_console_starts_on_the_recommended_core(self):
+        self.require_snes_info()
+        self.loose("Game.smc", b"s" * 16)
+        self.scan_with("snes9x", "bsnes")
+        self.assertEqual(self.snes_core(), "bsnes")
+
+    def test_the_alternative_when_only_it_is_installed(self):
+        self.require_snes_info()
+        self.loose("Game.smc", b"s" * 16)
+        self.scan_with("snes9x")
+        self.assertEqual(self.snes_core(), "snes9x")
+
+    def test_no_core_is_a_choice_the_scan_keeps(self):
+        self.require_snes_info()
+        self.loose("Game.smc", b"s" * 16)
+        self.scan_with("bsnes", "snes9x")
+        cartridge_state.set_core(ROOT, SNES, "-")
+        self.scan_with("bsnes", "snes9x")
+        self.assertEqual(self.snes_core(), "")
+
+    def test_a_picked_core_is_not_replaced_by_the_default(self):
+        self.require_snes_info()
+        self.loose("Game.smc", b"s" * 16)
+        self.scan_with("bsnes", "snes9x")
+        cartridge_state.set_core(ROOT, SNES, "snes9x")
+        self.scan_with("bsnes", "snes9x")
+        self.assertEqual(self.snes_core(), "snes9x")
+
+    def test_installing_the_recommended_core_later_sets_it(self):
+        self.require_snes_info()
+        self.loose("Game.smc", b"s" * 16)
+        self.scan_with()
+        self.assertEqual(self.snes_core(), "")
+        installed = {"bsnes": "/usr/lib/libretro/bsnes_libretro.so"}
+        with mock.patch.object(lib, "installed_cores", return_value=installed):
+            result = cartridge_state.rescan_cores(ROOT)
+        self.assertEqual(result["defaulted"], [SNES])
+        self.assertEqual(self.snes_core(), "bsnes")
+
     def test_a_console_without_a_core_is_still_dropped(self):
         rom = self.loose("Game.smc", b"s" * 16)
-        self.scan()
+        self.scan_with()                      # nothing installed: no default either
         os.unlink(rom)
         self.loose("Other.v64", b"n" * 16)
-        self.scan()
+        self.scan_with()
         self.assertNotIn(SNES, lib.read_json(lib.consoles_json())["consoles"])
 
 

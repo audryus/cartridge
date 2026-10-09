@@ -129,6 +129,16 @@ Mupen64Plus-Next and ParaLLEl N64; PlayStation offers Beetle PSX and Beetle PSX
 HW. A console with roms but no installed core says so instead of offering an
 empty list.
 
+A console starts on the core [retrohandheldhq.com](https://retrohandheldhq.com/posts/retroarch-cores/)
+recommends for it — Mesen for NES, bsnes for SNES, Gambatte, mGBA,
+Mupen64Plus-Next, melonDS, Genesis Plus GX, Beetle Saturn, Beetle PSX HW,
+PCSX2, PPSSPP, FBNeo, Flycast, Stella, ProSystem, Beetle Lynx, Virtual Jaguar —
+or the alternative it names when only that one is installed
+(`RECOMMENDED_CORES` in `bin/cartridge_lib.py`). That is a default, not a
+decision: change it in the config window, or pick "No core" and it stays
+that way. A console whose recommended core is not installed gets it once the
+core is, from the ↻ button or the next scan.
+
 The list of installed cores is taken at scan time. A core installed or removed
 since then shows up with the ↻ button in the config window's header, which reads
 `/usr/lib/libretro` again and rewrites `cores.json` alone, in a second, without

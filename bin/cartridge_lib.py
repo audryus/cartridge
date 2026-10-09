@@ -461,6 +461,73 @@ def write_cores(path, cores, installed):
     return entries
 
 
+# ------------------------------------------------------------ default cores
+
+# The core a console starts on until the user picks one, from
+# retrohandheldhq.com/posts/retroarch-cores: the recommendation first, then the
+# alternative it names. Ids are installed_cores() ids -- file names, which Arch
+# still spells the old way for some cores (mednafen_psx_hw is Beetle PSX HW) --
+# so both spellings are listed where they differ. The first one installed that
+# the config popup would offer for the console wins.
+RECOMMENDED_CORES = {
+    "nintendo-entertainment-system": ("mesen", "fceumm"),
+    "super-nintendo-entertainment-system": ("bsnes", "snes9x"),
+    "game-boy-game-boy-color": ("gambatte", "sameboy"),
+    "game-boy-advance": ("mgba", "vbam"),
+    "nintendo-64": ("mupen64plusnext", "paralleln64"),
+    "nintendo-ds": ("melonds", "desmume"),
+    "sega-genesis-mega-drive": ("genesisplusgx", "blastem"),
+    "saturn": ("mednafensaturn", "beetlesaturn", "yabause"),
+    "playstation": ("mednafenpsxhw", "beetlepsxhw", "swanstation"),
+    "playstation-2": ("pcsx2", "lrps2"),
+    "psp": ("ppsspp",),
+    "arcade-various": ("fbneo", "mame2003plus"),
+    "neo-geo": ("fbneo", "mame2003plus"),
+    "cp-system-i": ("fbneo", "mame2003plus"),
+    "cp-system-ii": ("fbneo", "mame2003plus"),
+    "cp-system-iii": ("fbneo", "mame2003plus"),
+    "cp-system-i-ii": ("fbneo", "mame2003plus"),
+    "sega-dreamcast": ("flycast",),
+    "atari-2600": ("stella",),
+    "atari-7800": ("prosystem",),
+    "lynx": ("mednafenlynx", "beetlelynx", "handy"),
+    "jaguar": ("virtualjaguar",),
+}
+
+
+def runs_console(core, console_id):
+    """Whether the config popup offers `core` (a cores.json entry) for this
+    console. CartridgeModel.runsConsole is the same test."""
+    return console_id in (core.get("systemIds") or []) or core.get("systemId") == console_id
+
+
+def default_core(console_id, core_entries):
+    """The recommended core for a console among those installed, or ""."""
+    usable = {core.get("id") for core in core_entries if runs_console(core, console_id)}
+    for core_id in RECOMMENDED_CORES.get(console_id, ()):
+        if core_id in usable:
+            return core_id
+    return ""
+
+
+def apply_default_cores(consoles, core_entries):
+    """Give the recommended core to every console the user has not decided on.
+
+    `coreChosen` marks a decision, "No core" included, so a core the user took
+    away is not put back on the next scan. A console whose recommended core is
+    not installed is left alone and tried again when the cores are re-read.
+    Returns the ids of the consoles that got one."""
+    changed = []
+    for console_id, entry in consoles.items():
+        if not isinstance(entry, dict) or entry.get("core") or entry.get("coreChosen"):
+            continue
+        core_id = default_core(console_id, core_entries)
+        if core_id:
+            entry["core"] = core_id
+            changed.append(console_id)
+    return changed
+
+
 def normalize_core_id(value):
     return re.sub(r"[^a-z0-9]+", "", str(value or "").lower())
 

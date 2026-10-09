@@ -94,9 +94,11 @@ def assign_console(root, rom_id, console_id):
 
 def ensure_console(root, console_id, catalog):
     """A console the library did not have before now has one, and it needs an
-    entry so a core can be assigned to it without waiting for a rescan."""
+    entry so a core can be assigned to it without waiting for a rescan. It
+    starts on the recommended core, the same as after a scan."""
     if console_id in (lib.UNKNOWN_ID, AUTO):
         return
+    core_entries = (lib.read_json(lib.cores_json(root), {}) or {}).get("cores") or []
 
     def mutate(document):
         consoles = document.get("consoles")
@@ -106,6 +108,7 @@ def ensure_console(root, console_id, catalog):
         entry.setdefault("core", "")
         entry["present"] = True
         entry["name"] = catalog.get(console_id, entry.get("name") or console_id)
+        lib.apply_default_cores({console_id: entry}, core_entries)
         document["consoles"] = consoles
     lib.update_json(lib.consoles_json(root), mutate,
                     default=lambda: {"consoles": {}, "catalog": {}})
@@ -159,6 +162,8 @@ def set_core(root, console_id, core_id):
         if not isinstance(entry, dict):
             return document
         entry["core"] = "" if core_id == "-" else core_id
+        # "No core" is a choice too: the recommended core is not put back.
+        entry["coreChosen"] = True
         state["entry"] = entry
     lib.update_json(lib.consoles_json(root), mutate,
                     default=lambda: {"consoles": {}, "catalog": {}})
@@ -173,17 +178,33 @@ def rescan_cores(root):
     removed since the last scan shows up in the config window in a second
     instead of after a full Refresh.
 
-    Only cores.json is written. A console whose chosen core is gone keeps the
-    choice, the same as after a scan; cartridge-play is what reports it."""
+    A console whose chosen core is gone keeps the choice, the same as after a
+    scan; cartridge-play is what reports it. A console nobody has chosen for
+    gets its recommended core if that is what was just installed, so
+    consoles.json is written too, and only then."""
+    defaulted = []
+
+    def mutate(document):
+        consoles = document.get("consoles")
+        if isinstance(consoles, dict):
+            defaulted.extend(lib.apply_default_cores(consoles, entries))
+        return document
+
     with lib.state_lock(root):
         before = lib.read_json(lib.cores_json(root), {}) or {}
         entries = lib.write_cores(lib.cores_json(root), lib.load_core_info(),
                                   lib.installed_cores())
+        # A throwaway read first, so consoles.json -- which the UI watches --
+        # is rewritten only when a default actually lands.
+        current = (lib.read_json(lib.consoles_json(root), {}) or {}).get("consoles")
+        if isinstance(current, dict) and lib.apply_default_cores(current, entries):
+            lib.update_json(lib.consoles_json(root), mutate, default=lambda: {})
     old = {core.get("id"): core.get("label") for core in before.get("cores") or []}
     new = {core["id"]: core["label"] for core in entries}
     return {"ok": True, "cores": len(entries),
             "added": sorted(new[i] for i in set(new) - set(old)),
-            "removed": sorted(old[i] or i for i in set(old) - set(new))}
+            "removed": sorted(old[i] or i for i in set(old) - set(new)),
+            "defaulted": sorted(defaulted)}
 
 
 def main():

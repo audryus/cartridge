@@ -459,6 +459,10 @@ QtObject {
             const bits = [result.cores + " cores installed"]
             if (result.added.length) bits.push("new: " + result.added.join(", "))
             if (result.removed.length) bits.push("gone: " + result.removed.join(", "))
+            const defaulted = result.defaulted || []
+            if (defaulted.length)
+                bits.push(defaulted.length + (defaulted.length === 1 ? " console" : " consoles") +
+                          " set to the recommended core")
             if (!result.added.length && !result.removed.length) bits.push("nothing changed")
             coresReport = bits.join(" · ")
         })

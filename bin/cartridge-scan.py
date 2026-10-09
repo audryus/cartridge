@@ -329,13 +329,16 @@ def previous_state(path):
     return previous, containers
 
 
-def write_consoles(path, detector, detected, ext_map, roms_stamp):
+def write_consoles(path, detector, detected, ext_map, roms_stamp, core_entries):
     """Console table for the consoles this library has roms for.
 
     Only the detected rows are rewritten, so a core the user picked for a
     console stays picked. A console that has no roms right now -- a drive not
     mounted, a folder being moved -- keeps its row and its core, marked absent,
-    rather than losing the choice. A row with no core to remember is dropped."""
+    rather than losing the choice. A row with no choice to remember is dropped.
+
+    A console nobody has picked a core for gets the recommended one, if it is
+    installed (lib.RECOMMENDED_CORES)."""
     def mutate(document):
         consoles = document.get("consoles")
         if not isinstance(consoles, dict):
@@ -344,7 +347,7 @@ def write_consoles(path, detector, detected, ext_map, roms_stamp):
             if console_id in detected:
                 continue
             entry = consoles[console_id]
-            if isinstance(entry, dict) and entry.get("core"):
+            if isinstance(entry, dict) and (entry.get("core") or entry.get("coreChosen")):
                 entry["present"] = False
             else:
                 del consoles[console_id]
@@ -358,6 +361,7 @@ def write_consoles(path, detector, detected, ext_map, roms_stamp):
             entry.setdefault("core", "")
             entry["exts"] = sorted(ext for ext, ids in ext_map.items()
                                    if console_id in ids)
+        lib.apply_default_cores(consoles, core_entries)
         document["consoles"] = consoles
         document["catalog"] = dict(sorted(detector.catalog.items()))
         document["generated"] = lib.now()
@@ -585,8 +589,9 @@ def main():
             "containers": containers,
             "roms": roms,
         })
-        write_consoles(lib.consoles_json(root), detector, detected, detector.ext_map, stamp)
-        lib.write_cores(lib.cores_json(root), detector.cores, installed)
+        core_entries = lib.write_cores(lib.cores_json(root), detector.cores, installed)
+        write_consoles(lib.consoles_json(root), detector, detected, detector.ext_map, stamp,
+                       core_entries)
 
     log("cartridge: %d roms, %d consoles, %d duplicates hidden, +%d -%d"
         % (summary["total"], summary["consoles"], len(hidden),
